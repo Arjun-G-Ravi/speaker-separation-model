@@ -1,0 +1,4 @@
+checkpoint: null  # Set to out/<run_id>/best.pt
+device: auto
+split: test
+crop_seconds: 10

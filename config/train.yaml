@@ -1,0 +1,40 @@
+model:
+  name: conv_tasnet
+  sources: 3
+  encoder_channels: 512
+  kernel_size: 16
+  stride: 8
+  bottleneck_channels: 128
+  hidden_channels: 512
+  skip_channels: 128
+  temporal_kernel: 3
+  blocks: 8
+  repeats: 3
+data:
+  root: data/Libri3Mix
+  train_manifest: train.json
+  validation_manifest: validation.json
+  test_manifest: test.json
+  sample_rate: 8000
+  segment_seconds: 10
+training:
+  seed: 42
+  device: auto
+  amp: true
+  batch_size: 1
+  accumulation_steps: 4
+  workers: 2
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0
+  gradient_clip: 5.0
+  scheduler_patience: 3
+  scheduler_factor: 0.5
+  early_stopping_patience: 10
+  log_every_steps: 20
+checkpoint:
+  resume: null
+logging:
+  wandb_mode: online
+  wandb_project: libri3mix-separation
+  wandb_entity: null

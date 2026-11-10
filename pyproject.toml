@@ -1,0 +1,18 @@
+[project]
+name = "speaker-separation-model"
+version = "0.1.0"
+description = "From-scratch Conv-TasNet on a bounded Libri3Mix subset"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+  "torch>=2.9,<2.10",
+  "numpy>=2.2,<3",
+  "scipy>=1.15,<2",
+  "PyYAML>=6,<7",
+  "wandb>=0.19,<1",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100

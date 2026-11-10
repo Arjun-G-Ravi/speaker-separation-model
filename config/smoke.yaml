@@ -1,0 +1,19 @@
+seed: 7
+sample_rate: 8000
+seconds: 0.25
+examples: 3
+overfit_steps: 80
+learning_rate: 0.003
+minimum_improvement_db: 2.0
+model:
+  name: conv_tasnet
+  sources: 3
+  encoder_channels: 16
+  kernel_size: 16
+  stride: 8
+  bottleneck_channels: 8
+  hidden_channels: 16
+  skip_channels: 8
+  temporal_kernel: 3
+  blocks: 3
+  repeats: 1

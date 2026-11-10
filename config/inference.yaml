@@ -1,0 +1,4 @@
+checkpoint: null  # Set to out/<run_id>/best.pt
+input: null  # Mono or multichannel WAV/FLAC
+output: out/separated
+device: auto
