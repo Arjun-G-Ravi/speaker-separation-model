@@ -8,8 +8,9 @@ identify the same person across different clips. This is an offline model.
 ## Environment
 
 Use your existing environment; no environment creation or dependency installation
-is performed by the project. `ffmpeg` must be on PATH for FLAC decoding. WAV I/O
-uses SciPy. Python 3.11–3.14 is supported.
+is performed by the project. `ffmpeg` must be on PATH for fallback FLAC decoding.
+Installing the optional `soundfile` package enables faster native FLAC decoding
+without starting a subprocess per source. WAV I/O uses SciPy. Python 3.11–3.14 is supported.
 
 The inspected environment already contains PyTorch, NumPy, SciPy, and PyYAML.
 W&B is missing. Run this yourself if using online logging:
@@ -17,6 +18,12 @@ W&B is missing. Run this yourself if using online logging:
 ```fish
 /home/arjun/ai_env/bin/python -m pip install 'wandb>=0.19,<1'
 /home/arjun/ai_env/bin/wandb login
+```
+
+For faster dataset preparation, run this yourself:
+
+```fish
+/home/arjun/ai_env/bin/python -m pip install 'soundfile>=0.13,<0.14'
 ```
 
 `pyproject.toml` declares dependencies; `uv.lock` records a complete resolution.
@@ -64,9 +71,16 @@ to the revision in `config/prepare.yaml`. With seed 42 it selects exactly:
 
 | Output split | Original split | Mixtures | Unique speech utterances |
 | --- | --- | ---: | ---: |
-| train | train-clean-100 | 5,000 | 15,000 |
-| validation | dev-clean | 500 | 1,149 |
-| test | test-clean | 500 | 1,104 |
+| train | train-clean-100 | 500 | 1,500 |
+| validation | dev-clean | 50 | 144 |
+| test | test-clean | 50 | 146 |
+
+This is the small trial configuration. For the later 5,000/500/500 experiment,
+change the three counts in `config/prepare.yaml` and use a separate root, also
+updating `data.root` in `config/train.yaml`. Existing larger-run files under
+`data/Libri3Mix` are preserved; the small trial uses `data/Libri3Mix-small`.
+Reducing the counts speeds training and reduces stored audio, but sequential
+archive preparation can still read most of the original training archive.
 
 It streams the [official LibriSpeech archives](https://www.openslr.org/12),
 stores only selected sources, and creates clean mixtures using the published
@@ -86,6 +100,16 @@ If retries are exhausted, rerun the same command: finished mixtures and availabl
 temporary sources are reused, though a new process restarts its archive network pass.
 Do not delete the dataset directory after a timeout.
 
+The default source host is the official China mirror, which was faster than the
+original host in short transfer probes from this workspace. Actual throughput varies.
+Preparation uses 16 parallel HTTP range requests with 4 MiB chunks, feeds them to
+the archive decoder in order, and limits the prefetch window to about 68 MiB of payload.
+No full archive is written to disk. Transfer progress prints archive bytes, throughput,
+and an estimated archive completion time, including local processing pauses. A new
+process must still reread the archive prefix; cached sources and completed mixtures
+are reused. Stop an already-running preparation process before starting the updated
+one. Set `network.download_workers: 1` for mirrors that cannot serve parallel ranges.
+
 The **10 GB ceiling is decimal bytes and covers files under the dataset root**,
 including source cache, partial files, manifests, and outputs. It does not count
 existing Python packages, filesystem allocation overhead, training logs, or models.
@@ -95,7 +119,7 @@ cannot fit. Exact full-subset storage has not been measured without downloading 
 Do not run multiple preparation processes against the same root.
 
 ```text
-data/Libri3Mix/
+data/Libri3Mix-small/
   train/{mix_clean,s1,s2,s3}/<official_mixture_ID>.wav
   validation/{mix_clean,s1,s2,s3}/<official_mixture_ID>.wav
   test/{mix_clean,s1,s2,s3}/<official_mixture_ID>.wav
@@ -133,7 +157,7 @@ Adam starts at `1e-3`, with batch size 1 and four-step accumulation. Gradients a
 unscaled before clipping at norm 5. Validation SI-SDR selects the best model;
 ReduceLROnPlateau halves the rate after its configured patience, and early stopping
 ends training after ten unimproved epochs. Maximum training length is 100 epochs.
-These are baseline settings, not a promise of separation quality on 5,000 examples.
+These are baseline settings, not a promise of separation quality on this small subset.
 
 Each run prints its unique timestamp ID and writes:
 

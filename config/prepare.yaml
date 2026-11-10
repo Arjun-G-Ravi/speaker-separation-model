@@ -1,4 +1,4 @@
-root: data/Libri3Mix
+root: data/Libri3Mix-small
 seed: 42
 revision: b898ca375c03e4039cdb3dbe3dd485aad58ec7d1
 sample_rate: 8000
@@ -8,16 +8,18 @@ network:
   timeout_seconds: 120
   retries: 6
   retry_delay_seconds: 3
+  download_workers: 16
+  chunk_bytes: 4194304
 splits:
   train:
     source: train-clean-100
-    count: 5000
-    archive: https://www.openslr.org/resources/12/train-clean-100.tar.gz
+    count: 500
+    archive: https://openslr.magicdatatech.com/resources/12/train-clean-100.tar.gz
   validation:
     source: dev-clean
-    count: 500
-    archive: https://www.openslr.org/resources/12/dev-clean.tar.gz
+    count: 50
+    archive: https://openslr.magicdatatech.com/resources/12/dev-clean.tar.gz
   test:
     source: test-clean
-    count: 500
-    archive: https://www.openslr.org/resources/12/test-clean.tar.gz
+    count: 50
+    archive: https://openslr.magicdatatech.com/resources/12/test-clean.tar.gz

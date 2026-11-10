@@ -11,7 +11,8 @@ import tarfile
 import time
 import urllib.error
 import urllib.request
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 
@@ -104,6 +105,7 @@ class ResumableHTTPStream:
         self.url, self.timeout = url, timeout_seconds
         self.retries, self.delay = retries, retry_delay_seconds
         self.offset, self.total, self.validator = 0, None, None
+        self.end = None
         self.response = None
 
     def close(self):
@@ -113,8 +115,8 @@ class ResumableHTTPStream:
 
     def connect(self):
         headers = {"Accept-Encoding": "identity"}
-        if self.offset:
-            headers["Range"] = f"bytes={self.offset}-"
+        if self.offset or self.end is not None:
+            headers["Range"] = f"bytes={self.offset}-{self.end if self.end is not None else ''}"
             if self.validator:
                 headers["If-Range"] = self.validator
         self.response = urllib.request.urlopen(
@@ -133,6 +135,9 @@ class ResumableHTTPStream:
                 raise ValueError("Server returned an invalid download resume range")
             self.total = int(match[3])
         elif self.response.status == 200:
+            if self.end is not None:
+                self.close()
+                raise ValueError("Server ignored a parallel range request; set download_workers: 1")
             length = self.response.headers.get("Content-Length")
             self.total = int(length) if length is not None else None
             # Some mirrors ignore Range. Replay the prefix without storing it.
@@ -149,6 +154,10 @@ class ResumableHTTPStream:
             raise ValueError("Unexpected archive HTTP response")
 
     def read(self, size):
+        if self.end is not None:
+            size = min(size, self.end + 1 - self.offset)
+            if size <= 0:
+                return b""
         for attempt in range(self.retries + 1):
             try:
                 if self.response is None:
@@ -173,14 +182,89 @@ class ResumableHTTPStream:
                 time.sleep(delay)
 
 
+class ParallelHTTPStream:
+    """Prefetch a bounded window of ranges, returning archive bytes in order."""
+
+    def __init__(self, url, timeout, retries, delay, workers, chunk_bytes):
+        self.url, self.options = url, (timeout, retries, delay)
+        self.chunk_bytes, self.next_start, self.offset = chunk_bytes, 0, 0
+        self.buffer, self.position = b"", 0
+        self.pending = deque()
+        self.pool = None
+        self.serial = ResumableHTTPStream(url, *self.options)
+        prefix = self.serial.read(1)
+        self.total, self.validator = self.serial.total, self.serial.validator
+        ranges = self.serial.response.headers.get("Accept-Ranges", "").lower()
+        if not self.total or ranges != "bytes":
+            print("Mirror does not advertise byte ranges; using one connection", flush=True)
+            self.buffer = prefix
+            return
+        self.serial.close()
+        self.serial = None
+        self.pool = ThreadPoolExecutor(max_workers=workers)
+        self.started = self.last_report = time.monotonic()
+        print(f"Parallel download: {workers} connections, {chunk_bytes / 2**20:.0f} MiB chunks, "
+              f"{self.total / 1e9:.2f} GB archive; buffered window <= "
+              f"{(workers + 1) * chunk_bytes / 2**20:.0f} MiB", flush=True)
+        for _ in range(workers):
+            self.schedule()
+
+    def fetch(self, start, end):
+        with closing(ResumableHTTPStream(self.url, *self.options)) as stream:
+            stream.offset, stream.end, stream.validator = start, end, self.validator
+            content = io.BytesIO()
+            while chunk := stream.read(min(1024 * 1024, end + 1 - stream.offset)):
+                content.write(chunk)
+            return content.getvalue()
+
+    def schedule(self):
+        if self.next_start < self.total:
+            end = min(self.next_start + self.chunk_bytes, self.total) - 1
+            self.pending.append(self.pool.submit(self.fetch, self.next_start, end))
+            self.next_start = end + 1
+
+    def read(self, size):
+        if self.position == len(self.buffer):
+            if self.serial is not None:
+                return self.serial.read(size)
+            if not self.pending:
+                return b""
+            self.buffer = self.pending.popleft().result()
+            self.position = 0
+            self.schedule()
+        chunk = self.buffer[self.position:self.position + size]
+        self.position += len(chunk)
+        self.offset += len(chunk)
+        if self.pool and time.monotonic() - self.last_report >= 5:
+            elapsed = time.monotonic() - self.started
+            speed = self.offset / max(elapsed, 1e-6)
+            remaining = (self.total - self.offset) / max(speed, 1)
+            print(f"Archive read: {self.offset / 1e9:.3f}/{self.total / 1e9:.2f} GB "
+                  f"({100 * self.offset / self.total:.1f}%), {speed / 1e6:.2f} MB/s, "
+                  f"archive ETA ~{remaining / 60:.1f} min (includes processing)", flush=True)
+            self.last_report = time.monotonic()
+        return chunk
+
+    def close(self):
+        if self.serial is not None:
+            self.serial.close()
+        if self.pool is not None:
+            self.pool.shutdown(wait=True, cancel_futures=True)
+
+
 def stream_sources(archive, wanted, cache, budget, timeout_seconds=120, retries=6,
-                   retry_delay_seconds=3):
+                   retry_delay_seconds=3, download_workers=1, chunk_bytes=4194304):
     """Yield stored source names; tar members outside wanted never touch disk."""
-    if timeout_seconds <= 0 or retries < 0 or retry_delay_seconds < 0:
+    if timeout_seconds <= 0 or retries < 0 or retry_delay_seconds < 0 or download_workers < 1 or chunk_bytes < 1:
         raise ValueError("Download timeout must be positive; retries and delay must be nonnegative")
-    connection = (closing(ResumableHTTPStream(archive, timeout_seconds, retries, retry_delay_seconds))
-                  if str(archive).startswith("http") else open(archive, "rb"))
     print(f"Reading source archive: {archive}", flush=True)
+    if str(archive).startswith("http"):
+        stream = (ParallelHTTPStream(archive, timeout_seconds, retries, retry_delay_seconds,
+                                     download_workers, chunk_bytes) if download_workers > 1 else
+                  ResumableHTTPStream(archive, timeout_seconds, retries, retry_delay_seconds))
+        connection = closing(stream)
+    else:
+        connection = open(archive, "rb")
     with connection as response, tarfile.open(fileobj=response, mode="r|gz") as tar:
         for member in tar:
             name = Path(member.name).name

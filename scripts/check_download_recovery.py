@@ -76,8 +76,41 @@ def check_exhaustion():
             assert open_mock.call_count == 3
 
 
+def check_parallel(range_supported=True):
+    content, files = archive_fixture()
+
+    def urlopen(request, timeout):
+        header = request.get_header("Range")
+        start, end = 0, len(content) - 1
+        status = 200
+        headers = {"ETag": '"fixture"'}
+        if range_supported:
+            headers["Accept-Ranges"] = "bytes"
+        if header and range_supported:
+            left, right = header.split("=")[1].split("-")
+            start = int(left)
+            end = int(right) if right else len(content) - 1
+            headers["Content-Range"] = f"bytes {start}-{end}/{len(content)}"
+            status = 206
+        headers["Content-Length"] = str(end - start + 1)
+        return Response(content[start:end + 1], status, headers)
+
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        budget = StorageBudget(root, 1000000, 0)
+        with patch("scripts.prepare_data.urllib.request.urlopen", urlopen):
+            names = list(stream_sources("https://fixture/archive.tar.gz", set(files), root, budget,
+                                        download_workers=4, chunk_bytes=8192))
+        assert set(names) == set(files)
+        for name, expected in files.items():
+            assert (root / name).read_bytes() == expected
+        assert budget.used == sum(map(len, files.values()))
+
+
 if __name__ == "__main__":
     check_recovery(True)
     check_recovery(False)
     check_exhaustion()
-    print("Download recovery checks passed (range resume, replay fallback, retry exhaustion)")
+    check_parallel()
+    check_parallel(False)
+    print("Download checks passed (resume, replay, retry exhaustion, parallel ranges, serial fallback)")
