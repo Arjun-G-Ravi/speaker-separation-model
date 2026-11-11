@@ -21,8 +21,8 @@ training:
   seed: 42
   device: auto
   amp: true
-  batch_size: 1
-  accumulation_steps: 4
+  batch_size: 4
+  accumulation_steps: 1
   workers: 2
   epochs: 100
   learning_rate: 0.001

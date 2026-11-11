@@ -1,0 +1,8 @@
+checkpoint: out/2026-11-11_07-00-31_005338/best.pt
+device: auto
+host: 127.0.0.1
+port: 7860
+output: out/demo
+max_upload_mb: 50
+max_upload_seconds: 60
+cpu_threads: 4

@@ -5,6 +5,42 @@ It maps `[batch, samples]` to `[batch, 3, samples]`. A 10-second input produces
 three 80,000-sample tracks. Source identities are unordered; speaker 1 does not
 identify the same person across different clips. This is an offline model.
 
+## Local listening room
+
+Run the dataset browser and upload inference UI in your uv environment:
+
+```fish
+uv run -m scripts.serve_demo
+```
+
+Open **http://localhost:7860**. If your uv environment has not been prepared,
+`uv run` will resolve/install the declared dependencies when you run it yourself.
+To reuse the existing global environment without installing anything:
+
+```fish
+uv run --no-project --no-sync --python /home/arjun/ai_env/bin/python -m scripts.serve_demo
+```
+
+The viewer lists all training and validation examples with search and pagination.
+Select a mixture to play its three ground-truth sources; **Run separation** adds
+the model outputs, matched to the reference order using PIT, with per-example
+SI-SDR and improvement over the mixture. Predictions are generated on demand and
+cached for the current server session. The training history and checkpoint score
+are shown separately from the current example's score.
+
+The **Your audio** tab accepts WAV, MP3, FLAC, OGG, M4A, and other formats supported
+by the installed ffmpeg. Uploads default to at most 50 MB and 60 seconds. Uploaded
+audio is converted to mono/8 kHz, with three playable/downloadable float WAV
+outputs; there are no reference tracks or quality scores for uploads. Only one
+inference request runs at a time. The model loads once at startup.
+
+Set the checkpoint, device, port, upload limits, and output directory in
+`config/demo.yaml`. It defaults to the latest completed run's best checkpoint.
+Generated tracks stay under `out/demo/<session>/`; source dataset files are untouched.
+The service binds only to localhost. When running on your SSH machine, forward
+the port from your laptop (`ssh -L 7860:127.0.0.1:7860 your-server`), then open the
+same localhost URL in your laptop browser. No hosting service is required.
+
 ## Environment
 
 Use your existing environment; no environment creation or dependency installation

@@ -20,18 +20,17 @@ def read_audio(path):
             else:
                 audio = audio.astype(np.float32) / (np.iinfo(audio.dtype).max + 1)
         return int(rate), audio.astype(np.float32)
-    if path.suffix.lower() != ".flac":
-        raise ValueError("Input must be WAV or FLAC")
     try:
         import soundfile
     except ImportError:
         pass
     else:
-        audio, rate = soundfile.read(path, dtype="float32")
-        return int(rate), audio
+        if path.suffix.lower() == ".flac":
+            audio, rate = soundfile.read(path, dtype="float32")
+            return int(rate), audio
     # WAV output preserves sample rate/channels and avoids torchcodec dependencies.
     result = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(path), "-f", "wav", "-acodec", "pcm_f32le", "-"],
+        ["ffmpeg", "-v", "error", "-i", str(path), "-vn", "-f", "wav", "-acodec", "pcm_f32le", "-"],
         check=True, capture_output=True,
     )
     # ffmpeg cannot seek back on a pipe and writes UINT_MAX chunk lengths.
