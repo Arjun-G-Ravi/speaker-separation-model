@@ -24,20 +24,21 @@ class SeparationDataset(Dataset):
 
     def __getitem__(self, index):
         record = self.records[index]
-        signals = []
-        for path in [record["mixture"], *record["sources"]]:
-            rate, audio = read_audio(self.root / path)
-            if rate != self.rate or audio.ndim != 1 or not np.isfinite(audio).all():
-                raise ValueError(f"Invalid waveform: {path}")
-            signals.append(torch.from_numpy(audio.copy()))
-        if len(signals) != 4 or len({len(signal) for signal in signals}) != 1:
-            raise ValueError("Expected aligned mixture and three sources")
-        length = len(signals[0])
+        length = record["length"]
+        start = 0
         if self.segment and length > self.segment:
             start = (random.randint(0, length - self.segment) if self.random_crop
                      else (length - self.segment) // 2)
-            signals = [signal[start:start + self.segment] for signal in signals]
             length = self.segment
+        signals = []
+        for path in [record["mixture"], *record["sources"]]:
+            rate, audio = read_audio(self.root / path, start=start,
+                                     frames=length if self.segment else None)
+            if rate != self.rate or audio.ndim != 1 or not np.isfinite(audio).all():
+                raise ValueError(f"Invalid waveform: {path}")
+            signals.append(torch.from_numpy(audio))
+        if len(signals) != 4 or any(len(signal) != length for signal in signals):
+            raise ValueError("Expected aligned mixture and three sources")
         target = torch.stack(signals[1:])
         if (target.var(-1, unbiased=False) <= 1e-10).any():
             raise ValueError(f"Silent source in example {record['id']}")

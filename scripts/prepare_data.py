@@ -101,9 +101,10 @@ def generate_example(root, split, row, cache, rate, budget):
 class ResumableHTTPStream:
     """Keep the gzip decoder alive while reconnecting at compressed byte offsets."""
 
-    def __init__(self, url, timeout_seconds, retries, retry_delay_seconds):
+    def __init__(self, url, timeout_seconds, retries, retry_delay_seconds, cancel_event=None):
         self.url, self.timeout = url, timeout_seconds
         self.retries, self.delay = retries, retry_delay_seconds
+        self.cancel_event = cancel_event
         self.offset, self.total, self.validator = 0, None, None
         self.end = None
         self.response = None
@@ -159,6 +160,8 @@ class ResumableHTTPStream:
             if size <= 0:
                 return b""
         for attempt in range(self.retries + 1):
+            if self.cancel_event is not None and self.cancel_event.is_set():
+                raise InterruptedError("Download cancelled")
             try:
                 if self.response is None:
                     self.connect()
@@ -179,7 +182,10 @@ class ResumableHTTPStream:
                 delay = min(self.delay * 2**attempt, 30)
                 print(f"Download interrupted ({error}); reconnecting at {self.offset / 1e6:.1f} MB "
                       f"in {delay}s, retry {attempt + 1}/{self.retries}", flush=True)
-                time.sleep(delay)
+                if self.cancel_event is None:
+                    time.sleep(delay)
+                elif self.cancel_event.wait(delay):
+                    raise InterruptedError("Download cancelled") from error
 
 
 class ParallelHTTPStream:
@@ -266,6 +272,7 @@ def stream_sources(archive, wanted, cache, budget, timeout_seconds=120, retries=
     else:
         connection = open(archive, "rb")
     with connection as response, tarfile.open(fileobj=response, mode="r|gz") as tar:
+        found, last_report = 0, time.monotonic()
         for member in tar:
             name = Path(member.name).name
             if not member.isfile() or name not in wanted:
@@ -281,6 +288,11 @@ def stream_sources(archive, wanted, cache, budget, timeout_seconds=120, retries=
                     raise IOError(f"Truncated archive source: {name}")
                 partial.replace(full)
                 budget.used += member.size
+            found += 1
+            if found == 1 or found == len(wanted) or time.monotonic() - last_report >= 5:
+                print(f"Sources extracted: {found}/{len(wanted)}; "
+                      f"storage {budget.used / 1e9:.3f} GB", flush=True)
+                last_report = time.monotonic()
             yield name
 
 
@@ -295,6 +307,9 @@ def prepare(config, metadata=None):
         budget.remove(path)
     identities = {}
     for split, spec in config["splits"].items():
+        began = time.monotonic()
+        print(f"Preparing {split}: {spec['count']} mixtures; checking metadata and existing WAVs",
+              flush=True)
         if metadata is None:
             url = (f"https://raw.githubusercontent.com/JorisCos/LibriMix/{config['revision']}/"
                    f"metadata/Libri3Mix/libri3mix_{spec['source']}.csv")
@@ -338,6 +353,8 @@ def prepare(config, metadata=None):
                 for path in paths:
                     budget.remove(root / path)
                 pending[row["mixture_ID"]] = row
+        print(f"{split}: reusing {len(selected) - len(pending)}/{len(selected)} mixtures; "
+              f"{len(pending)} to generate", flush=True)
         references = Counter()
         dependencies = defaultdict(set)
         for key, row in pending.items():
@@ -364,7 +381,9 @@ def prepare(config, metadata=None):
                     if references[source] == 0:
                         budget.remove(cache / source)
                 if len(pending) % 100 == 0:
-                    print(f"{split}: {len(pending)} remaining; {budget.used / 1e9:.3f} GB", flush=True)
+                    print(f"{split}: {len(selected) - len(pending)}/{len(selected)} mixtures ready; "
+                          f"{len(pending)} remaining; storage {budget.used / 1e9:.3f} GB; "
+                          f"elapsed {(time.monotonic() - began) / 60:.1f} min", flush=True)
 
         for path in list(cache.iterdir()):
             consume(path.name)
@@ -387,6 +406,8 @@ def prepare(config, metadata=None):
                     "selection_sha256": digest(selection_path), "sample_rate": config["sample_rate"],
                     "examples": examples}
         budget.write_bytes(root / f"{split}.json", json.dumps(manifest, indent=2).encode())
+        print(f"{split} complete: {len(examples)} mixtures; manifest {root / (split + '.json')}",
+              flush=True)
     report = {"peak_bytes": budget.peak, "final_bytes": budget.used,
               "budget_bytes": budget.limit,
               "manifest_hashes": {split: digest(root / f"{split}.json") for split in identities}}

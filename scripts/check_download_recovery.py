@@ -1,5 +1,6 @@
 """Offline regression checks for interrupted source archive transfers."""
 
+import hashlib
 import io
 import random
 import tarfile
@@ -7,6 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.download_dataset import download_archive
 from scripts.prepare_data import StorageBudget, stream_sources
 
 
@@ -107,10 +109,55 @@ def check_parallel(range_supported=True):
         assert budget.used == sum(map(len, files.values()))
 
 
+def check_disk_resume():
+    content, _ = archive_fixture()
+    expected = hashlib.md5(content).hexdigest()
+    size = 8192
+    calls = []
+
+    def urlopen(request, timeout):
+        left, right = request.get_header("Range").split("=")[1].split("-")
+        start, end = int(left), int(right)
+        calls.append(start)
+        return Response(content[start:end + 1], 206, {
+            "Content-Range": f"bytes {start}-{end}/{len(content)}", "ETag": '"fixture"',
+        })
+
+    options = {"workers": 4, "chunk_bytes": size, "timeout_seconds": 1,
+               "retries": 0, "retry_delay_seconds": 0, "progress_seconds": 1}
+    with tempfile.TemporaryDirectory() as folder:
+        root = Path(folder)
+        destination = root / "archive.tar.gz"
+        chunks = root / f"archive.tar.gz.{expected}.{size}.chunks"
+        chunks.mkdir()
+        # Simulate an earlier process stopping after one complete chunk.
+        (chunks / "0.chunk").write_bytes(content[:size])
+        (chunks / f"{size}.partial").write_bytes(b"unfinished")
+        budget = StorageBudget(root, 1000000, 0)
+        with patch("scripts.download_dataset.select_mirror",
+                   return_value=("https://fixture/archive.tar.gz", len(content), '"fixture"')), \
+             patch("scripts.prepare_data.urllib.request.urlopen", urlopen):
+            download_archive(destination, expected, options, budget)
+            assert destination.read_bytes() == content
+            assert 0 not in calls and size in calls
+            assert not chunks.exists()
+            calls.clear()
+            download_archive(destination, expected, options, budget)
+            assert not calls, "A verified archive should not be downloaded again"
+            destination.write_bytes(b"corrupt")
+            try:
+                download_archive(destination, expected, options, budget)
+            except ValueError as error:
+                assert "Checksum mismatch" in str(error)
+            else:
+                raise AssertionError("Corrupt archive was accepted")
+
+
 if __name__ == "__main__":
     check_recovery(True)
     check_recovery(False)
     check_exhaustion()
     check_parallel()
     check_parallel(False)
-    print("Download checks passed (resume, replay, retry exhaustion, parallel ranges, serial fallback)")
+    check_disk_resume()
+    print("Download checks passed (resume, replay, retries, ranges, fallback, disk resume, checksums)")

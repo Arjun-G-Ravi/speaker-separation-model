@@ -1,0 +1,32 @@
+root: data/Libri3Mix-5000
+seed: 42
+revision: b898ca375c03e4039cdb3dbe3dd485aad58ec7d1
+sample_rate: 8000
+# Includes cached archives, temporary download chunks, sources, and prepared WAVs.
+budget_bytes: 20000000000
+reserve_bytes: 100000000
+download:
+  workers: 16
+  chunk_bytes: 8388608
+  timeout_seconds: 30
+  retries: 6
+  retry_delay_seconds: 2
+  progress_seconds: 2
+  mirrors:
+    - https://openslr.magicdatatech.com/resources/12
+    - https://openslr.trmal.net/resources/12
+    - https://openslr.elda.org/resources/12
+# Official archive checksums: https://openslr.trmal.net/resources/12/md5sum.txt
+splits:
+  train:
+    source: train-clean-100
+    count: 5000
+    md5: 2a93770f6d5c6c964bc36631d331a522
+  validation:
+    source: dev-clean
+    count: 500
+    md5: 42e2234ba48799c1f50f24a7926300a1
+  test:
+    source: test-clean
+    count: 500
+    md5: 32fa31d27d2e1cad72775fee3f4849a9

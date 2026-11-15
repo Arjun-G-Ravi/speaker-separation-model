@@ -102,6 +102,38 @@ Online is the real-training default. Local metrics are always recorded.
 
 ## Libri3Mix subset
 
+To prepare the larger **5,000 training / 500 validation / 500 test** subset:
+
+```fish
+/home/arjun/ai_env/bin/python -m scripts.download_dataset
+```
+
+Settings live in `config/download.yaml`; output goes to `data/Libri3Mix-5000/`.
+This command downloads the official clean LibriSpeech archives (about 7 GB total),
+then builds the selected three-speaker, 8 kHz mixtures and manifests. It samples
+only the requested mixtures; it does not generate the full LibriMix dataset.
+It probes three official mirrors concurrently, chooses the fastest sample,
+uses 16 parallel connections, and retries interrupted connections. Terminal logs
+show downloaded GB, percentage, MB/s, ETA, cache reuse, extracted sources, and
+mixtures prepared. Probe speeds are estimates, not guaranteed sustained speeds.
+
+Completed 8 MiB download chunks survive interruption: run the same command to
+resume without fetching those chunks again. An incomplete chunk is fetched again.
+Archives are checked against the official OpenSLR MD5 checksums before preparation
+and retained in `data/Libri3Mix-5000/.archives/` for reuse. Unlike the streaming
+small-subset preparer below, this trades disk space for reliable download resumption.
+The separate large-subset config has a **20 GB storage ceiling**, including chunks,
+archive assembly, cached archives, temporary sources, and generated WAVs; free space
+is checked before each archive download. Mirror URLs, connection count, timeouts,
+and storage limits can be changed in the YAML. No new Python packages are needed.
+If preparation is interrupted after downloading, rerunning reuses verified archives
+and completed mixtures. Run only one preparer against a dataset root at a time.
+
+`config/train.yaml` already targets `data/Libri3Mix-5000`: 5,000 training,
+500 validation, and 500 test examples. If these files are already prepared, run
+`/home/arjun/ai_env/bin/python -m src.train` directly. The download command preserves
+the small dataset and does not change training settings or start training.
+
 Preparation pins the [official LibriMix metadata](https://github.com/JorisCos/LibriMix)
 to the revision in `config/prepare.yaml`. With seed 42 it selects exactly:
 
@@ -111,9 +143,9 @@ to the revision in `config/prepare.yaml`. With seed 42 it selects exactly:
 | validation | dev-clean | 50 | 144 |
 | test | test-clean | 50 | 146 |
 
-This is the small trial configuration. For the later 5,000/500/500 experiment,
-change the three counts in `config/prepare.yaml` and use a separate root, also
-updating `data.root` in `config/train.yaml`. Existing larger-run files under
+This is the small trial configuration in `config/prepare.yaml`. The larger
+5,000/500/500 experiment uses the separate `config/download.yaml` described above.
+Existing larger-run files under
 `data/Libri3Mix` are preserved; the small trial uses `data/Libri3Mix-small`.
 Reducing the counts speeds training and reduces stored audio, but sequential
 archive preparation can still read most of the original training archive.
@@ -171,10 +203,15 @@ disjointness, and mixture/source agreement within PCM16 quantization tolerance.
 `preparation.json` reports actual preparation storage and manifest hashes.
 
 Training uses random synchronized 10-second crops, keeping shorter examples and
-masking batch padding in the loss. Validation uses complete recordings individually.
+masking batch padding in the loss. Prepared PCM16 WAVs are memory-mapped and cropped
+before float conversion, so training reads only the selected window from each track.
+Audio is loaded per example rather than caching the full dataset in RAM; workers
+prefetch a bounded number of batches. Validation uses complete recordings individually.
 Test evaluation reports both full recordings and deterministic centered 10-second
 crops (or the full clip when shorter). These metrics describe this selected subset,
 not the complete official benchmark. The test set is never used for checkpoint selection.
+Evaluation writes each example's results directly to its JSON file, keeping only
+running metric totals in memory.
 
 ## Model, optimization, and artifacts
 
@@ -189,11 +226,13 @@ Utterance-level PIT selects the best of all six source permutations independentl
 for each example. The objective is negative mean zero-mean SI-SDR in dB. Numerical
 stabilizers keep scores finite; silent references are rejected.
 
-Adam starts at `1e-3`, with batch size 1 and four-step accumulation. Gradients are
+Adam starts at `1e-3`, with batch size 4 and one-step accumulation. Gradients are
 unscaled before clipping at norm 5. Validation SI-SDR selects the best model;
 ReduceLROnPlateau halves the rate after its configured patience, and early stopping
 ends training after ten unimproved epochs. Maximum training length is 100 epochs.
-These are baseline settings, not a promise of separation quality on this small subset.
+These are baseline settings, not a promise of separation quality on this subset.
+Each epoch prints training batch progress and validation example progress at
+`training.log_every_steps` intervals, alongside the existing local and W&B metrics.
 
 Each run prints its unique timestamp ID and writes:
 
@@ -222,8 +261,12 @@ that the evaluated manifest matches the checkpoint's dataset identity.
 
 Inference restores model settings and sample rate from the checkpoint, averages
 multichannel input to mono, and resamples if necessary. It writes three float32 WAV
-tracks at 8 kHz with the same resampled duration. Tracks are not independently
-normalized or clipped. Existing output tracks cause an error; choose a fresh output
+tracks at 8 kHz with the same resampled duration. If predictions exceed the playback
+range, a shared attenuation brings their joint peak to 0.95 without clipping or
+changing relative speaker levels. SI-SDR ignores overall gain, so it cannot detect
+this playback overflow. The CLI prints the applied gain; the demo reports it in
+its response. `separate_waveform` still returns raw predictions for evaluation.
+Existing output tracks cause an error; choose a fresh output
 directory. Whole-clip inference avoids permutation changes between chunks; very long
 recordings may require more memory. Streaming/long-recording chunk stitching is outside
 this first experiment.

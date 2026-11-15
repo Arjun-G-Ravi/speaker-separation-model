@@ -11,7 +11,7 @@ model:
   blocks: 8
   repeats: 3
 data:
-  root: data/Libri3Mix-small
+  root: data/Libri3Mix-5000
   train_manifest: train.json
   validation_manifest: validation.json
   test_manifest: test.json

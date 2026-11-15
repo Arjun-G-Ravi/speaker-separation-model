@@ -6,6 +6,13 @@ from src.audio import read_audio, resample
 from src.settings import load_config, load_model, project_path, select_device
 
 
+def playback_audio(estimate):
+    """Attenuate all sources together if their peak exceeds the playback range."""
+    peak = float(np.max(np.abs(estimate)))
+    gain = 0.95 / peak if peak > 1.0 else 1.0
+    return (estimate * gain).astype(np.float32), gain
+
+
 @torch.inference_mode()
 def separate_waveform(model, audio, source_rate, target_rate, device):
     if audio.ndim == 2:
@@ -33,6 +40,8 @@ def separate(checkpoint, input_path, output, device_name="auto"):
     paths = [destination / f"speaker_{index + 1}.wav" for index in range(len(estimate))]
     if any(path.exists() for path in paths):
         raise FileExistsError("Output tracks already exist; choose a new output directory")
+    estimate, gain = playback_audio(estimate)
+    print(f"WAV playback gain: {gain:.8g} (shared across all speakers)")
     for path, track in zip(paths, estimate):
         wavfile.write(path, target_rate, track.astype(np.float32))
     print(f"Saved {len(paths)} tracks at {target_rate} Hz to {destination}")

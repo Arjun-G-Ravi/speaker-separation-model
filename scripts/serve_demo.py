@@ -17,7 +17,7 @@ import torch
 from scipy.io import wavfile
 
 from src.audio import read_audio
-from src.inference import separate_waveform
+from src.inference import playback_audio, separate_waveform
 from src.loss import pairwise_si_sdr, pit_si_sdr
 from src.settings import ROOT, digest, load_config, load_model, project_path, select_device
 
@@ -117,13 +117,14 @@ class Demo:
             input_path = destination / "mixture.wav"
             wavfile.write(input_path, self.rate, mixture)
             tracks = []
+            estimate, playback_gain = playback_audio(estimate)
             for index, signal in enumerate(estimate):
                 output = destination / f"speaker_{index + 1}.wav"
                 wavfile.write(output, self.rate, signal.astype(np.float32))
                 tracks.append(self.track(output, f"Speaker {index + 1} model output"))
             return {"tracks": tracks, "mixture": self.track(input_path, "Uploaded mixture"),
                     "seconds": time.monotonic() - started, "metrics": metrics,
-                    "matched": bool(references)}
+                    "matched": bool(references), "playback_gain": playback_gain}
         finally:
             self.lock.release()
 

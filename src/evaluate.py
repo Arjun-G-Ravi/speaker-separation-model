@@ -23,19 +23,27 @@ def evaluate(checkpoint, device_name, split="test", crop_seconds=10):
     log.mkdir(parents=True, exist_ok=True)
     summaries = {}
     for label, crop in (("full", None), ("crop", crop_seconds)):
-        records = []
-        for mixture, sources, lengths, names in make_loader(config, split, crop_seconds=crop):
-            mixture, sources, lengths = mixture.to(device), sources.to(device), lengths.to(device)
-            score, _ = pit_si_sdr(model(mixture), sources, lengths)
-            baseline, _ = pit_si_sdr(mixture[:, None].expand_as(sources), sources, lengths)
-            records.append({"id": names[0], "si_sdr": score.item(),
-                            "mixture_si_sdr": baseline.item(),
-                            "si_sdri": (score - baseline).item(), "samples": int(lengths[0])})
         name = f"{split}_{label}"
-        (log / f"{name}_examples.json").write_text(json.dumps(records, indent=2, allow_nan=False))
-        summaries[name] = {"examples": len(records),
-                           "si_sdr": sum(r["si_sdr"] for r in records) / len(records),
-                           "si_sdri": sum(r["si_sdri"] for r in records) / len(records),
+        total_score, total_improvement, count = 0.0, 0.0, 0
+        with (log / f"{name}_examples.json").open("w") as output:
+            output.write("[\n")
+            for mixture, sources, lengths, names in make_loader(config, split, crop_seconds=crop):
+                mixture, sources, lengths = mixture.to(device), sources.to(device), lengths.to(device)
+                score, _ = pit_si_sdr(model(mixture), sources, lengths)
+                baseline, _ = pit_si_sdr(mixture[:, None].expand_as(sources), sources, lengths)
+                record = {"id": names[0], "si_sdr": score.item(),
+                          "mixture_si_sdr": baseline.item(),
+                          "si_sdri": (score - baseline).item(), "samples": int(lengths[0])}
+                if count:
+                    output.write(",\n")
+                output.write(json.dumps(record, indent=2, allow_nan=False))
+                total_score += record["si_sdr"]
+                total_improvement += record["si_sdri"]
+                count += 1
+            output.write("\n]\n")
+        summaries[name] = {"examples": count,
+                           "si_sdr": total_score / count,
+                           "si_sdri": total_improvement / count,
                            "crop_seconds": crop}
     (log / f"{split}_metrics.json").write_text(json.dumps(summaries, indent=2, allow_nan=False))
     print(json.dumps(summaries, indent=2))

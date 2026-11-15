@@ -10,10 +10,13 @@ from scipy.io import wavfile
 from scipy.signal import resample_poly
 
 
-def read_audio(path):
+def read_audio(path, *, start=0, frames=None):
     path = Path(path)
+    stop = None if frames is None else start + frames
     if path.suffix.lower() == ".wav":
-        rate, audio = wavfile.read(path)
+        # Prepared PCM16 WAVs can be cropped before conversion or disk paging.
+        rate, audio = wavfile.read(path, mmap=frames is not None or start != 0)
+        audio = audio[start:stop]
         if audio.dtype.kind in "iu":
             if audio.dtype == np.uint8:
                 audio = (audio.astype(np.float32) - 128) / 128
@@ -26,7 +29,7 @@ def read_audio(path):
         pass
     else:
         if path.suffix.lower() == ".flac":
-            audio, rate = soundfile.read(path, dtype="float32")
+            audio, rate = soundfile.read(path, dtype="float32", start=start, stop=stop)
             return int(rate), audio
     # WAV output preserves sample rate/channels and avoids torchcodec dependencies.
     result = subprocess.run(
@@ -45,7 +48,7 @@ def read_audio(path):
             break
         position += 8 + size + size % 2
     rate, audio = wavfile.read(io.BytesIO(buffer))
-    return int(rate), audio.astype(np.float32)
+    return int(rate), audio[start:stop].astype(np.float32)
 
 
 def resample(audio, source_rate, target_rate):
