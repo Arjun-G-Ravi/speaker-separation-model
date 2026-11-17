@@ -8,31 +8,36 @@ import torch
 import yaml
 
 from src.data import make_loader
-from src.loss import pit_loss, pit_si_sdr
+from src.loss import pit_objective
 from src.model import build_model
 from src.settings import (append_json, atomic_save, create_run, digest, load_config,
-                          project_path, restore_rng, rng_state, seed_all, select_device)
+                          project_path, resolve_training_config, restore_rng, rng_state,
+                          seed_all, select_device)
 
 
 @torch.inference_mode()
 def validate(model, loader, device, log_every_steps=None):
     model.eval()
-    total, count = 0.0, 0
+    total, scale_total, peak, count = 0.0, 0.0, 0.0, 0
     for index, (mixture, sources, lengths, _) in enumerate(loader):
         mixture, sources, lengths = mixture.to(device), sources.to(device), lengths.to(device)
-        scores, _ = pit_si_sdr(model(mixture), sources, lengths)
-        total += scores.sum().item()
-        count += len(scores)
+        estimate = model(mixture)
+        metrics = pit_objective(estimate, sources, lengths)
+        total += metrics["si_sdr"].item() * len(mixture)
+        scale_total += metrics["scale_loss"].item() * len(mixture)
+        peak = max(peak, estimate.abs().max().item())
+        count += len(mixture)
         if log_every_steps and ((index + 1) % log_every_steps == 0 or index + 1 == len(loader)):
             print(f"Validation: {count}/{len(loader.dataset)} examples, "
                   f"SI-SDR {total / count:.3f} dB", flush=True)
-    return total / count
+    return {"si_sdr": total / count, "scale_loss": scale_total / count, "output_peak": peak}
 
 
 def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_step=None):
     model.train()
     optimizer.zero_grad(set_to_none=True)
     total, count = 0.0, 0
+    si_total, scale_total, peak = 0.0, 0.0, 0.0
     accumulation = options["accumulation_steps"]
     amp = options["amp"] and device.type == "cuda"
     for index, (mixture, sources, lengths, _) in enumerate(loader):
@@ -44,7 +49,8 @@ def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_s
                              len(loader.dataset) - group_start * loader.batch_size)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp):
             estimate = model(mixture)
-        loss = pit_loss(estimate, sources, lengths)
+        metrics = pit_objective(estimate, sources, lengths, options.get("scale_loss_weight", 0.0))
+        loss = metrics["loss"]
         if not torch.isfinite(loss):
             raise FloatingPointError("Non-finite training loss")
         scaler.scale(loss * len(mixture) / group_examples).backward()
@@ -63,13 +69,24 @@ def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_s
                       f"loss {loss.item():.3f}", flush=True)
                 if log_step:
                     log_step({"step": step, "train/batch_loss": loss.item(),
+                              "train/batch_si_sdr": metrics["si_sdr"].item(),
+                              "train/batch_scale_loss": metrics["scale_loss"].item(),
                               "train/gradient_norm": float(norm) if torch.isfinite(norm) else None})
         total += loss.item() * len(mixture)
+        si_total += metrics["si_sdr"].item() * len(mixture)
+        scale_total += metrics["scale_loss"].item() * len(mixture)
+        peak = max(peak, estimate.detach().abs().max().item())
         count += len(mixture)
-    return total / count, step
+    return total / count, step, {"si_sdr": si_total / count,
+                               "scale_loss": scale_total / count, "output_peak": peak}
 
 
 def run_training(config):
+    config = resolve_training_config(config)
+    # Validate source counts and fixed crop lengths before creating run artifacts.
+    train_loader = make_loader(config, "train")
+    for split in ("validation", "test"):
+        make_loader(config, split)
     options = config["training"]
     for key in ("batch_size", "accumulation_steps", "epochs", "log_every_steps",
                 "early_stopping_patience"):
@@ -77,6 +94,8 @@ def run_training(config):
             raise ValueError(f"training.{key} must be positive")
     if options["workers"] < 0 or options["learning_rate"] <= 0:
         raise ValueError("workers must be nonnegative and learning_rate positive")
+    if not 0 <= options.get("scale_loss_weight", 0.0) < math.inf:
+        raise ValueError("training.scale_loss_weight must be finite and nonnegative")
     seed_all(options["seed"])
     device = select_device(options["device"])
     model = build_model(config["model"]).to(device)
@@ -113,7 +132,10 @@ def run_training(config):
         start, step, best, stale = (previous[k] for k in ("next_epoch", "step", "best", "stale"))
         restore_rng(previous["rng"])
     run_id, artifact, log = create_run()
-    print(f"Run {run_id}: device={device}, AMP={scaler.is_enabled()}", flush=True)
+    print(f"Run {run_id}: model={config['model']['name']}, sources={model.sources}, "
+          f"device={device}, AMP={scaler.is_enabled()}", flush=True)
+    print(f"Dataset: {config['data'].get('dataset', config['data']['root'])} "
+          f"({len(train_loader.dataset)} training examples)", flush=True)
     print(f"Artifacts: {artifact}\nLogs: {log}", flush=True)
     (log / "train.yaml").write_text(yaml.safe_dump(config))
     metadata = {"python": platform.python_version(), "torch": str(torch.__version__),
@@ -156,10 +178,12 @@ def run_training(config):
             print(f"Epoch {epoch + 1}/{options['epochs']}", flush=True)
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
-            loss, step = train_epoch(model, make_loader(config, "train", epoch), optimizer,
+            loader = train_loader if epoch == 0 else make_loader(config, "train", epoch)
+            loss, step, train_metrics = train_epoch(model, loader, optimizer,
                                      scaler, device, options, step, record)
-            score = validate(model, make_loader(config, "validation"), device,
-                             options["log_every_steps"])
+            validation = validate(model, make_loader(config, "validation"), device,
+                                  options["log_every_steps"])
+            score = validation["si_sdr"]
             if not math.isfinite(score):
                 raise FloatingPointError("Non-finite validation SI-SDR")
             scheduler.step(score)
@@ -171,6 +195,8 @@ def run_training(config):
                        "elapsed_seconds": time.monotonic() - began,
                        "gpu_peak_bytes": torch.cuda.max_memory_allocated(device)
                        if device.type == "cuda" else 0}
+            metrics.update({f"train/{key}": value for key, value in train_metrics.items()})
+            metrics.update({f"validation/{key}": value for key, value in validation.items()})
             record(metrics)
             print(json.dumps(metrics), flush=True)
             state = {"model": model.state_dict(), "optimizer": optimizer.state_dict(),

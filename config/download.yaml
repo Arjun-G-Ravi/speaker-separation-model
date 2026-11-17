@@ -1,4 +1,5 @@
 root: data/Libri3Mix-5000
+sources: 3  # For Libri2Mix use 2 and root: data/Libri2Mix-5000.
 seed: 42
 revision: b898ca375c03e4039cdb3dbe3dd485aad58ec7d1
 sample_rate: 8000

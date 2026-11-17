@@ -1,4 +1,4 @@
-checkpoint: null  # Set to out/<run_id>/best.pt
+checkpoint: out/2026-11-15_12-03-09_059720/best.pt
 device: auto
 split: test
 crop_seconds: 10

@@ -1,4 +1,4 @@
-checkpoint: null  # Set to out/<run_id>/best.pt
+checkpoint: out/2026-11-14_19-52-54_688479/best.pt
 input: null  # Mono or multichannel WAV/FLAC
 output: out/separated
 device: auto

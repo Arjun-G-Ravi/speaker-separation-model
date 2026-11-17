@@ -21,16 +21,16 @@ from src.audio import read_audio
 from src.data import collate_audio, make_loader
 from src.evaluate import evaluate
 from src.inference import separate
-from src.loss import pairwise_si_sdr, pit_loss
+from src.loss import pairwise_si_sdr, pit_loss, pit_objective
 from src.model import build_model
-from src.settings import ROOT, load_config, seed_all
+from src.settings import ROOT, load_config, resolve_training_config, seed_all
 from src.train import run_training, train_epoch
 
 
-def make_fixture(root, settings):
+def make_fixture(root, settings, source_count=3):
     archives, metadata = {}, {}
     rate = settings["sample_rate"] * 2
-    fields = ["mixture_ID", *[field for i in (1, 2, 3)
+    fields = ["mixture_ID", *[field for i in range(1, source_count + 1)
                               for field in (f"source_{i}_path", f"source_{i}_gain")]]
     for split_index, split in enumerate(("train", "validation", "test")):
         archive = root / f"{split}.tar.gz"
@@ -40,7 +40,7 @@ def make_fixture(root, settings):
         with tarfile.open(archive, "w:gz") as tar:
             for example in range(settings["examples"]):
                 row, ids = {}, []
-                for index in (1, 2, 3):
+                for index in range(1, source_count + 1):
                     identifier = f"{split_index * 100 + example * 3 + index}-1-0000"
                     ids.append(identifier)
                     path = root / f"{identifier}.wav"
@@ -75,6 +75,30 @@ def loss_checks(model_config):
                           expected, atol=1e-5)
     assert pit_loss(target[:, [2, 0, 1]], target) < -60
     assert pit_loss(torch.zeros_like(target), target) > 70
+    combined = pit_loss(estimate, target, scale_weight=1.0)
+    for order in permutations(range(3)):
+        assert torch.allclose(pit_loss(estimate[:, order], target, scale_weight=1.0),
+                              combined, atol=1e-5)
+    assert torch.allclose(pit_loss(padded_estimate, padded_target, torch.tensor([251, 251]),
+                                  scale_weight=1.0), combined, atol=1e-5)
+    assert pit_loss(estimate * 100, target, scale_weight=1.0) > combined + 20
+    assert pit_loss(-estimate, target, scale_weight=1.0) > combined
+    # Check joint assignment against independently computed waveform errors.
+    scores = pairwise_si_sdr(estimate, target)
+    candidates = []
+    for order in permutations(range(3)):
+        reference = target[:, order]
+        error = (estimate - reference).square().sum(-1) / reference.square().sum(-1)
+        candidates.append(-scores[:, range(3), order].mean(-1)
+                          + (10 * torch.log10(1 + error)).mean(-1))
+    manual_joint = torch.stack(candidates, -1).min(-1).values.mean()
+    torch.testing.assert_close(combined, manual_joint)
+    gain = torch.tensor(1000.0, requires_grad=True)
+    pit_loss(estimate * gain, target, scale_weight=1.0).backward()
+    assert torch.isfinite(gain.grad) and gain.grad > 0
+    gain = torch.tensor(0.1, requires_grad=True)
+    pit_objective(target * gain, target)["scale_loss"].backward()
+    assert torch.isfinite(gain.grad) and gain.grad < 0
     try:
         pit_loss(target, torch.zeros_like(target))
     except ValueError:
@@ -95,7 +119,7 @@ def loss_checks(model_config):
     loss = pit_loss(model(torch.randn(2, 251)), target)
     loss.backward()
     assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
-    full = build_model(load_config("train.yaml")["model"])
+    full = build_model(resolve_training_config(load_config("train.yaml"))["model"])
     full(torch.randn(1, 257)).square().mean().backward()
     assert all(p.grad is None or torch.isfinite(p.grad).all() for p in full.parameters())
 
@@ -113,16 +137,68 @@ def accumulation_check(model_config):
     options.update(amp=False, accumulation_steps=2)
     optimizer = torch.optim.SGD(accumulated.parameters(), lr=0.001)
     reference_optimizer = torch.optim.SGD(reference.parameters(), lr=0.001)
-    _, steps = train_epoch(accumulated, loader, optimizer,
+    _, steps, _ = train_epoch(accumulated, loader, optimizer,
                            torch.amp.GradScaler("cuda", enabled=False), torch.device("cpu"), options)
     assert steps == 2
     for start, stop in ((0, 4), (4, 5)):
         reference_optimizer.zero_grad(set_to_none=True)
-        pit_loss(reference(mixtures[start:stop]), targets[start:stop]).backward()
+        pit_loss(reference(mixtures[start:stop]), targets[start:stop],
+                 scale_weight=options["scale_loss_weight"]).backward()
         torch.nn.utils.clip_grad_norm_(reference.parameters(), options["gradient_clip"])
         reference_optimizer.step()
     for actual, expected in zip(accumulated.parameters(), reference.parameters()):
         assert torch.allclose(actual, expected, atol=1e-6)
+
+
+def training_data_checks(config):
+    first = list(make_loader(config, "train", epoch=0))
+    repeated = list(make_loader(config, "train", epoch=0))
+    next_epoch = list(make_loader(config, "train", epoch=1))
+    workers = copy.deepcopy(config)
+    workers["training"]["workers"] = 2
+    parallel = list(make_loader(workers, "train", epoch=0))
+    segment = round(config["data"]["segment_seconds"] * config["data"]["sample_rate"])
+    manifest = json.loads((Path(config["data"]["root"]) / "train.json").read_text())
+    allowed = {source for row in manifest["examples"] for source in row["id"].split("_")}
+    for batch, repeat, worker_batch in zip(first, repeated, parallel):
+        mixture, sources, lengths, names = batch
+        assert mixture.shape[-1] == segment and (lengths == segment).all()
+        torch.testing.assert_close(mixture, sources.sum(1), atol=0, rtol=0)
+        assert max(mixture.abs().max(), sources.abs().max()) <= config["data"]["dynamic_mixing"]["peak_limit"] + 1e-6
+        assert (sources.var(-1) > 1e-10).all()
+        for name in names:
+            utterances = [part.split("@")[0] for part in name.split("_")]
+            assert set(utterances) <= allowed
+            assert len({utterance.split("-")[0] for utterance in utterances}) == config["model"]["sources"]
+        for other in (repeat, worker_batch):
+            assert names == other[3]
+            torch.testing.assert_close(sources, other[1], atol=0, rtol=0)
+    assert first[0][3] != next_epoch[0][3]
+    for split in ("validation", "test"):
+        loader = make_loader(config, split)
+        assert loader.dataset.mixing is None and loader.dataset.segment is None
+    fixed = copy.deepcopy(config)
+    fixed["data"]["dynamic_mixing"]["enabled"] = False
+    assert all((batch[2] == segment).all() for batch in make_loader(fixed, "train"))
+    loud = copy.deepcopy(config)
+    loud["data"]["dynamic_mixing"]["source_rms"] = 5
+    mixture, sources, _, _ = next(iter(make_loader(loud, "train")))
+    assert max(mixture.abs().max(), sources.abs().max()) <= loud["data"]["dynamic_mixing"]["peak_limit"] + 1e-6
+    fixed["data"]["segment_seconds"] = 100
+    try:
+        make_loader(fixed, "train")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Fixed training crops allowed short inputs")
+    dataset = make_loader(config, "train").dataset
+    with patch("src.data.read_audio", return_value=(dataset.rate, np.zeros(segment, np.float32))):
+        try:
+            dataset[0]
+        except ValueError as error:
+            assert "active crop" in str(error)
+        else:
+            raise AssertionError("Dynamic mixing accepted silent crops")
 
 
 def main():
@@ -192,10 +268,14 @@ def main():
 
         training = load_config("train.yaml")
         training["model"] = settings["model"]
+        training["data"].pop("dataset", None)
+        training["data"].pop("roots", None)
         training["data"]["root"] = str(root / "prepared")
+        training["data"]["segment_seconds"] = settings["seconds"]
         training["training"].update({"epochs": 2, "workers": 0, "device": "cpu",
                                      "batch_size": 2, "accumulation_steps": 2})
         training["logging"]["wandb_mode"] = "disabled"
+        training_data_checks(training)
         worker_config = copy.deepcopy(training)
         worker_config["training"]["workers"] = 2
         assert sum(len(batch[0]) for batch in make_loader(worker_config, "train")) == settings["examples"]
@@ -249,14 +329,15 @@ def main():
 
     cuda_result = "unavailable; CUDA/AMP checks skipped"
     if torch.cuda.is_available():
-        cuda_model = build_model(load_config("train.yaml")["model"]).cuda().train()
-        target = torch.randn(1, 3, 80000, device="cuda")
+        cuda_model = build_model(resolve_training_config(load_config("train.yaml"))["model"]).cuda().train()
+        target = torch.randn(1, cuda_model.sources, 80000, device="cuda")
         optimizer = torch.optim.Adam(cuda_model.parameters(), lr=settings["learning_rate"])
         scaler = torch.amp.GradScaler("cuda")
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.float16):
             output = cuda_model(target.sum(1))
-        loss = pit_loss(output, target)
+        loss = pit_loss(output, target,
+                        scale_weight=load_config("train.yaml")["training"]["scale_loss_weight"])
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
         assert all(p.grad is None or torch.isfinite(p.grad).all() for p in cuda_model.parameters())
@@ -265,6 +346,7 @@ def main():
         cuda_result = "10-second standard-model AMP forward/backward/optimizer step passed"
     summary = {"synthetic_initial_loss": initial, "synthetic_final_loss": final,
                "cpu_checks": "passed", "cuda_checks": cuda_result,
+               "training_pipeline_checks": "fixed crops, train-only remixing, joint scale loss, worker reproducibility, recovery passed",
                "real_dataset_downloaded": False, "real_speech_metrics": None}
     destination = ROOT / "logs" / "smoke_result.json"
     destination.write_text(json.dumps(summary, indent=2))

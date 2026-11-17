@@ -55,8 +55,9 @@ class StorageBudget:
 
 
 def output_paths(split, row):
+    count = len(row["mixture_ID"].split("_"))
     return [Path(split) / kind / (row["mixture_ID"] + ".wav")
-            for kind in ("mix_clean", "s1", "s2", "s3")]
+            for kind in ("mix_clean", *[f"s{i}" for i in range(1, count + 1)])]
 
 
 def validate_example(root, paths, rate):
@@ -77,7 +78,7 @@ def validate_example(root, paths, rate):
 
 def generate_example(root, split, row, cache, rate, budget):
     sources = []
-    for index in range(1, 4):
+    for index in range(1, len(output_paths(split, row))):
         original_rate, audio = read_audio(cache / Path(row[f"source_{index}_path"]).name)
         if original_rate != 16000 or audio.ndim != 1:
             raise ValueError("Expected mono 16 kHz LibriSpeech sources")
@@ -88,7 +89,7 @@ def generate_example(root, split, row, cache, rate, budget):
     if any(not np.isfinite(x).all() or np.max(np.abs(x)) > 1 for x in [mixture, *sources]):
         raise ValueError("Nonfinite or clipping audio; refusing to alter official source gains")
     paths = output_paths(split, row)
-    budget.check(4 * (44 + length * 2))
+    budget.check(len(paths) * (44 + length * 2))
     for path, audio in zip(paths, [mixture, *sources]):
         full = root / path
         full.parent.mkdir(parents=True, exist_ok=True)
@@ -299,6 +300,11 @@ def stream_sources(archive, wanted, cache, budget, timeout_seconds=120, retries=
 def prepare(config, metadata=None):
     if config["sample_rate"] != 8000:
         raise ValueError("This experiment requires sample_rate: 8000")
+    sources = config.get("sources", 3)
+    if sources not in (2, 3):
+        raise ValueError("Preparation sources must be 2 or 3")
+    indices = range(1, sources + 1)
+    dataset = f"Libri{sources}Mix"
     root = project_path(config["root"])
     root.mkdir(parents=True, exist_ok=True)
     budget = StorageBudget(root, config["budget_bytes"], config["reserve_bytes"])
@@ -312,7 +318,7 @@ def prepare(config, metadata=None):
               flush=True)
         if metadata is None:
             url = (f"https://raw.githubusercontent.com/JorisCos/LibriMix/{config['revision']}/"
-                   f"metadata/Libri3Mix/libri3mix_{spec['source']}.csv")
+                   f"metadata/{dataset}/{dataset.lower()}_{spec['source']}.csv")
             with urllib.request.urlopen(url, timeout=60) as response:
                 raw = response.read()
         else:
@@ -324,8 +330,10 @@ def prepare(config, metadata=None):
         if len({row["mixture_ID"] for row in selected}) != len(selected):
             raise ValueError("Duplicate mixture IDs in the selected metadata")
         for row in selected:
-            if len({Path(row[f"source_{i}_path"]).stem.split("-")[0] for i in (1, 2, 3)}) != 3:
-                raise ValueError("A mixture must contain three distinct speakers")
+            if (len(row["mixture_ID"].split("_")) != sources
+                    or len({Path(row[f"source_{i}_path"]).stem.split("-")[0]
+                            for i in indices}) != sources):
+                raise ValueError(f"A mixture must contain {sources} distinct speakers")
         identity = {"revision": config["revision"], "source": spec["source"],
                     "seed": config["seed"], "sample_rate": config["sample_rate"],
                     "metadata_sha256": hashlib.sha256(raw).hexdigest(), "rows": selected}
@@ -334,7 +342,7 @@ def prepare(config, metadata=None):
             raise ValueError("Preparation configuration changed; use a new data root")
         budget.write_bytes(selection_path, json.dumps(identity, indent=2).encode())
         speaker_ids = {Path(row[f"source_{i}_path"]).stem.split("-")[0]
-                       for row in selected for i in (1, 2, 3)}
+                       for row in selected for i in indices}
         if any(speaker_ids & previous for previous in identities.values()):
             raise ValueError("Speaker leakage across dataset splits")
         identities[split] = speaker_ids
@@ -358,7 +366,7 @@ def prepare(config, metadata=None):
         references = Counter()
         dependencies = defaultdict(set)
         for key, row in pending.items():
-            for i in (1, 2, 3):
+            for i in indices:
                 name = Path(row[f"source_{i}_path"]).name
                 references[name] += 1
                 dependencies[name].add(key)
@@ -371,7 +379,7 @@ def prepare(config, metadata=None):
                 if key not in pending:
                     continue
                 row = pending[key]
-                names = [Path(row[f"source_{i}_path"]).name for i in (1, 2, 3)]
+                names = [Path(row[f"source_{i}_path"]).name for i in indices]
                 if not all((cache / source).exists() for source in names):
                     continue
                 generate_example(root, split, row, cache, config["sample_rate"], budget)
@@ -402,7 +410,7 @@ def prepare(config, metadata=None):
             length = validate_example(root, paths, config["sample_rate"])
             examples.append({"id": row["mixture_ID"], "mixture": str(paths[0]),
                              "sources": [str(path) for path in paths[1:]], "length": length})
-        manifest = {"dataset": "Libri3Mix", "variant": "8k/min/mix_clean",
+        manifest = {"dataset": dataset, "variant": "8k/min/mix_clean",
                     "selection_sha256": digest(selection_path), "sample_rate": config["sample_rate"],
                     "examples": examples}
         budget.write_bytes(root / f"{split}.json", json.dumps(manifest, indent=2).encode())

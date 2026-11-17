@@ -73,6 +73,7 @@ class Demo:
             history = [row for line in metrics.read_text().splitlines()
                        if "epoch" in (row := json.loads(line))]
         return {"run": self.state["run_id"], "epoch": self.state["next_epoch"],
+                "model": self.state["config"]["model"]["name"], "sources": self.model.sources,
                 "validation_si_sdr": self.state["best"], "device": str(self.device),
                 "rate": self.rate, "history": history,
                 "max_upload_mb": self.config["max_upload_mb"],

@@ -1,9 +1,43 @@
-# Three-speaker separation with Conv-TasNet
+# Speech separation with A-FRCNN and Conv-TasNet
 
-A from-scratch, noncausal PyTorch Conv-TasNet baseline for mono speech at 8 kHz.
-It maps `[batch, samples]` to `[batch, 3, samples]`. A 10-second input produces
-three 80,000-sample tracks. Source identities are unordered; speaker 1 does not
-identify the same person across different clips. This is an offline model.
+Noncausal PyTorch speech separation for mono audio at 8 kHz. The default model is
+A-FRCNN-16; the original Conv-TasNet is preserved in `src/conv_tasnet.py`, including
+compatibility with existing checkpoints. Models map `[batch, samples]` to
+`[batch, sources, samples]`, with two or three sources selected by the dataset.
+Source identities are unordered; speaker 1 does not identify the same person
+across different clips. These are offline models.
+
+### Selecting the training dataset
+
+In `config/train.yaml`, set `data.dataset: libri2mix` (the default) or `libri3mix`.
+The selector chooses the corresponding `data.roots` path and sets `model.sources`
+automatically. Both use A-FRCNN with `iterations: 16`. The resolved root and source
+count are saved in each run's configuration and checkpoint.
+
+Prepare the selected dataset first. For Libri2Mix, run:
+
+```fish
+/home/arjun/ai_env/bin/python -m scripts.download_libri2mix
+```
+
+Settings are in `config/download_libri2mix.yaml`: 5,000 training, 500 validation,
+and 500 test mixtures, with two sources at 8 kHz, saved to `data/Libri2Mix-5000/`.
+The downloader verifies archive checksums and resumes completed chunks when rerun.
+It can download about 7 GB of LibriSpeech archives and enforces a 20 GB storage
+ceiling under its dataset root. The original `scripts.download_dataset` command
+uses the separate three-speaker configuration. Selecting a training dataset
+never downloads it automatically.
+
+Train using `/home/arjun/ai_env/bin/python -m src.train`. Later, set
+`data.dataset: libri3mix`, verify its root contains prepared manifests, and keep
+`checkpoint.resume: null` to start a separate three-speaker experiment. Changing
+source counts changes the output head; this is not an automatic fine-tuning step.
+Resume supports interruptions of the same model/dataset configuration.
+
+The listening demo still selects the existing trained Conv-TasNet checkpoint.
+After training A-FRCNN, set the new checkpoint in `config/demo.yaml`,
+`config/evaluate.yaml`, `config/inference.yaml`, or `config/preview.yaml` as needed.
+Those tools recover the architecture and source count from the checkpoint.
 
 ## Local listening room
 
@@ -22,7 +56,7 @@ uv run --no-project --no-sync --python /home/arjun/ai_env/bin/python -m scripts.
 ```
 
 The viewer lists all training and validation examples with search and pagination.
-Select a mixture to play its three ground-truth sources; **Run separation** adds
+Select a mixture to play its ground-truth sources; **Run separation** adds
 the model outputs, matched to the reference order using PIT, with per-example
 SI-SDR and improvement over the mixture. Predictions are generated on demand and
 cached for the current server session. The training history and checkpoint score
@@ -30,16 +64,29 @@ are shown separately from the current example's score.
 
 The **Your audio** tab accepts WAV, MP3, FLAC, OGG, M4A, and other formats supported
 by the installed ffmpeg. Uploads default to at most 50 MB and 60 seconds. Uploaded
-audio is converted to mono/8 kHz, with three playable/downloadable float WAV
-outputs; there are no reference tracks or quality scores for uploads. Only one
+audio is converted to mono/8 kHz, with one playable/downloadable float WAV per source;
+there are no reference tracks or quality scores for uploads. Only one
 inference request runs at a time. The model loads once at startup.
 
 Set the checkpoint, device, port, upload limits, and output directory in
-`config/demo.yaml`. It defaults to the latest completed run's best checkpoint.
+`config/demo.yaml`. It selects the November 14 run's best checkpoint (epoch 65).
 Generated tracks stay under `out/demo/<session>/`; source dataset files are untouched.
 The service binds only to localhost. When running on your SSH machine, forward
 the port from your laptop (`ssh -L 7860:127.0.0.1:7860 your-server`), then open the
 same localhost URL in your laptop browser. No hosting service is required.
+
+To generate a listening preview with three held-out test examples and two training
+examples from that checkpoint:
+
+```fish
+/home/arjun/ai_env/bin/python -m scripts.preview_inference
+```
+
+`config/preview.yaml` controls the checkpoint and example counts. Each run writes
+a fresh `out/<run_id>/inference-preview-<timestamp>/index.html` with playable mixtures,
+references, predictions, and separate train/test metrics. Examples are the first
+manifest entries, selected before inference; training examples contain speech used
+during training. Open the generated `index.html` to listen.
 
 ## Environment
 
@@ -77,6 +124,9 @@ unless absolute. Edit YAML files rather than passing command-line arguments.
 ```fish
 # Offline synthetic correctness and optimization checks; no dataset download
 /home/arjun/ai_env/bin/python -m scripts.smoke_check
+
+# A-FRCNN-16 two/three-speaker preparation, training, evaluation, and inference checks
+/home/arjun/ai_env/bin/python -m scripts.check_afrcnn
 
 # Explicitly starts approximately 7 GB of source archive transfer
 /home/arjun/ai_env/bin/python -m scripts.prepare_data
@@ -129,10 +179,11 @@ and storage limits can be changed in the YAML. No new Python packages are needed
 If preparation is interrupted after downloading, rerunning reuses verified archives
 and completed mixtures. Run only one preparer against a dataset root at a time.
 
-`config/train.yaml` already targets `data/Libri3Mix-5000`: 5,000 training,
-500 validation, and 500 test examples. If these files are already prepared, run
-`/home/arjun/ai_env/bin/python -m src.train` directly. The download command preserves
-the small dataset and does not change training settings or start training.
+The `libri3mix` entry in `config/train.yaml` targets `data/Libri3Mix-5000`: 5,000
+training, 500 validation, and 500 test examples. Select `data.dataset: libri3mix`
+to use these prepared files. Training defaults to Libri2Mix in its separate root.
+The download command preserves the small dataset and does not change training
+settings or start training.
 
 Preparation pins the [official LibriMix metadata](https://github.com/JorisCos/LibriMix)
 to the revision in `config/prepare.yaml`. With seed 42 it selects exactly:
@@ -202,9 +253,22 @@ digests. Preparation validates alignment, sample rate, source energy, speaker sp
 disjointness, and mixture/source agreement within PCM16 quantization tolerance.
 `preparation.json` reports actual preparation storage and manifest hashes.
 
-Training uses random synchronized 10-second crops, keeping shorter examples and
-masking batch padding in the loss. Prepared PCM16 WAVs are memory-mapped and cropped
-before float conversion, so training reads only the selected window from each track.
+Training uses fixed 3-second crops with no batch padding. With dynamic mixing enabled,
+each sample selects the configured number of distinct training speakers and independent source crops
+from the prepared training source tracks. Sources are normalized to RMS 0.05 and
+receive independent gains sampled from -5 to +5 dB. A shared gain limits both the
+mixture and source peaks to 0.9; the mixture is recomputed from the scaled sources.
+No validation/test sources enter the mixer. The epoch length remains 5,000 mixtures.
+Selection and crops are deterministic for a seed, epoch, and sample index, including
+when resuming with zero loader workers. These prepared sources are truncated versions
+of the original utterances; remixing does not add new training speakers.
+
+`data.fixed_crops`, `data.segment_seconds`, and `data.dynamic_mixing` in
+`config/train.yaml` control this behavior. Training rejects sources shorter than
+the fixed crop. Active crops are retried up to `crop_attempts`; exhausting retries
+raises an error. Disable dynamic mixing to train on synchronized crops of the
+original mixtures. Prepared PCM16 WAVs are memory-mapped and cropped before float
+conversion, so training reads only the selected window from each track.
 Audio is loaded per example rather than caching the full dataset in RAM; workers
 prefetch a bounded number of batches. Validation uses complete recordings individually.
 Test evaluation reports both full recordings and deterministic centered 10-second
@@ -215,16 +279,45 @@ running metric totals in memory.
 
 ## Model, optimization, and artifacts
 
-The [Conv-TasNet paper](https://arxiv.org/abs/1809.07454) describes the learned
-encoder/decoder and dilated temporal convolution separator implemented here.
-Defaults: encoder width 512, 16-sample kernel/8-sample stride, bottleneck and skip
-width 128, hidden width 512, kernel 3, eight dilation blocks repeated three times.
-Blocks use global layer normalization, PReLU, depthwise convolutions, residual and
-skip connections. Three ReLU masks gate the encoded waveform.
+`src/afrcnn.py` implements the concatenation-fusion variant from the
+[A-FRCNN reference](https://github.com/JusperLee/AFRCNN-For-Speech-Separation),
+with a shared convolutional block applied 16 times. Defaults: 512 encoder channels,
+21-sample kernel/10-sample stride, bottleneck and hidden widths 512, and five temporal
+resolutions. Adjacent resolutions exchange features, then merge at full resolution
+inside each refinement. The two-speaker model has 6,134,793 parameters. It uses
+global normalization, so inference requires the complete clip. Attribution and the
+upstream MIT license are in `THIRD_PARTY_NOTICES.md`.
 
-Utterance-level PIT selects the best of all six source permutations independently
-for each example. The objective is negative mean zero-mean SI-SDR in dB. Numerical
-stabilizers keep scores finite; silent references are rejected.
+`src/conv_tasnet.py` preserves the original
+[Conv-TasNet](https://arxiv.org/abs/1809.07454) encoder/decoder and dilated temporal
+separator. Existing checkpoints retain their original architecture settings.
+`src/model.py` selects either model using `model.name` (`afrcnn` or `conv_tasnet`).
+Architecture-specific YAML fields must match the selected constructor; to retrain
+the baseline, use the `model` section saved with that baseline run.
+
+Utterance-level PIT selects the best of all source permutations (two for Libri2Mix,
+six for Libri3Mix) independently
+for each example using the combined objective:
+
+```text
+loss = mean(-SI-SDR + scale_loss_weight * scale_error)
+scale_error = 10 * log10(1 + sum((prediction - reference)^2) / sum(reference^2))
+```
+
+The scale-sensitive waveform error and SI-SDR use the same permutation and valid
+samples. `training.scale_loss_weight` defaults to 1.0; setting it to zero restores
+the SI-SDR objective. This weight is an initial experiment setting, not a tuned value.
+Numerical stabilizers keep scores finite; silent references are rejected.
+Logs include separate `train/si_sdr`, `train/scale_loss`, and `train/output_peak`
+values, with corresponding validation metrics. `train/loss` is the combined objective;
+its negative is no longer a SI-SDR score. Checkpoint selection still uses validation
+SI-SDR; validation and test recordings retain their original mixtures.
+
+The new architecture and training settings require a fresh run with `checkpoint.resume: null`. Old
+checkpoints still work for inference; the new crop/mixing/loss settings cannot be
+resumed into an old experiment. Run `/home/arjun/ai_env/bin/python -m src.train`
+to train with W&B using the existing environment. No speech-quality improvement
+is established until that run is evaluated.
 
 Adam starts at `1e-3`, with batch size 4 and one-step accumulation. Gradients are
 unscaled before clipping at norm 5. Validation SI-SDR selects the best model;
@@ -260,7 +353,7 @@ plus utterance-averaged summaries under the checkpoint's log directory. It check
 that the evaluated manifest matches the checkpoint's dataset identity.
 
 Inference restores model settings and sample rate from the checkpoint, averages
-multichannel input to mono, and resamples if necessary. It writes three float32 WAV
+multichannel input to mono, and resamples if necessary. It writes one float32 WAV per source
 tracks at 8 kHz with the same resampled duration. If predictions exceed the playback
 range, a shared attenuation brings their joint peak to 0.95 without clipping or
 changing relative speaker levels. SI-SDR ignores overall gain, so it cannot detect
@@ -280,12 +373,19 @@ scale invariance, padding exclusion, gradients, exact output lengths including
 80,000 samples, synthetic overfitting, checkpoint reload, deterministic epoch recovery,
 evaluation, stereo resampling, and three-track inference.
 
+`scripts.check_afrcnn` additionally checks two/three-speaker A-FRCNN-16 output
+lengths, finite gradients with the joint loss, deterministic preparation/remixing,
+tiny synthetic training, checkpoint reload, evaluation, and the correct number of
+inference exports. CPU checks do not establish GPU memory requirements or speech
+quality. No real-speech A-FRCNN training results have been measured here; the
+current crop/mixing/loss recipe is not a reproduction of published benchmark scores.
+
 Results are written to `logs/smoke_result.json`. Synthetic runs have their own
 timestamped logs/checkpoints; their temporary fixture dataset is removed afterward.
 They establish implementation behavior, not performance on real speech. Real-data
 SI-SDR/SI-SDRi and full-subset disk size must be measured after preparation/training.
 
-For future models, keep the `[B,T] -> [B,3,T]` interface and add an explicit branch
+For future models, keep the `[B,T] -> [B,C,T]` interface and add an explicit branch
 in `build_model`; data, PIT, training, and evaluation can remain shared.
 
 LibriSpeech is distributed under [CC BY 4.0](https://www.openslr.org/12).

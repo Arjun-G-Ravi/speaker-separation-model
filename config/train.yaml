@@ -1,33 +1,42 @@
 model:
-  name: conv_tasnet
-  sources: 3
+  name: afrcnn
+  # Output sources are derived from data.dataset.
   encoder_channels: 512
-  kernel_size: 16
-  stride: 8
-  bottleneck_channels: 128
+  kernel_size: 21
+  stride: 10
+  bottleneck_channels: 512
   hidden_channels: 512
-  skip_channels: 128
-  temporal_kernel: 3
-  blocks: 8
-  repeats: 3
+  stages: 5
+  iterations: 16
 data:
-  root: data/Libri3Mix-5000
+  dataset: libri2mix  # Change to libri3mix for a separate three-speaker run.
+  roots:
+    libri2mix: data/Libri2Mix-5000
+    libri3mix: data/Libri3Mix-5000
   train_manifest: train.json
   validation_manifest: validation.json
   test_manifest: test.json
   sample_rate: 8000
-  segment_seconds: 10
+  segment_seconds: 3
+  fixed_crops: true
+  dynamic_mixing:
+    enabled: true
+    source_rms: 0.05
+    gain_db: [-5.0, 5.0]
+    peak_limit: 0.9
+    crop_attempts: 10
 training:
   seed: 42
   device: auto
   amp: true
-  batch_size: 4
+  batch_size: 8
   accumulation_steps: 1
   workers: 2
   epochs: 100
   learning_rate: 0.001
   weight_decay: 0.0
   gradient_clip: 5.0
+  scale_loss_weight: 1.0
   scheduler_patience: 3
   scheduler_factor: 0.5
   early_stopping_patience: 10

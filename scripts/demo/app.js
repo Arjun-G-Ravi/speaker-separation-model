@@ -91,7 +91,7 @@ function renderList() {
     const number = document.createElement('span'); number.className = 'number'; number.textContent = String(row.index + 1).padStart(3, '0');
     const identifier = document.createElement('span'); identifier.className = 'identifier';
     identifier.textContent = row.id.replaceAll('_', ' / ');
-    const duration = document.createElement('small'); duration.textContent = `${row.duration.toFixed(2)} seconds · 3 speakers`;
+    const duration = document.createElement('small'); duration.textContent = `${row.duration.toFixed(2)} seconds · ${state.info.sources} speakers`;
     identifier.append(duration); button.append(number, identifier);
     button.addEventListener('click', () => selectExample(row.index));
     $('sample-list').append(button);
@@ -122,12 +122,12 @@ async function selectExample(index) {
 async function runExample() {
   if (state.busy || !state.detail) return;
   const split = state.split, index = state.selected;
-  setBusy(true); clearError(); status('Separating the mixture and matching the three estimates to the references…');
+  setBusy(true); clearError(); status('Separating the mixture and matching estimates to the references…');
   try {
     const result = await api('/api/separate', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'separation-viewer' }, body: JSON.stringify({ split, index }) });
     if (state.mode === 'dataset' && state.split === split && state.selected === index && state.detail) {
       renderComparison(state.detail.references, result);
-      status('Separation complete. Compare the three matched speakers below.');
+      status('Separation complete. Compare the matched speakers below.');
     }
   } catch (error) { showError(error); status('Separation did not finish. You can try again.'); }
   finally { setBusy(false); }
@@ -142,9 +142,9 @@ function changeMode(mode) {
     $(`${name}-mode`).classList.toggle('active', active);
     $(`${name}-mode`).setAttribute('aria-pressed', String(active));
   }
-  $('heading').innerHTML = dataset ? 'One mixture.<br>Three voices.' : 'Your audio.<br>A new perspective.';
+  $('heading').innerHTML = dataset ? `One mixture.<br>${state.info.sources} voices.` : 'Your audio.<br>A new perspective.';
   $('example-number').hidden = !dataset;
-  status(state.busy ? 'Separation is in progress…' : dataset ? 'Choose an example, then compare the reference and model tracks.' : 'Upload a mixture to get three separated tracks.');
+  status(state.busy ? 'Separation is in progress…' : dataset ? 'Choose an example, then compare the reference and model tracks.' : `Upload a mixture to get ${state.info.sources} separated tracks.`);
 }
 function chooseFile(file) {
   if (state.busy) return;
@@ -167,27 +167,27 @@ async function runUpload(event) {
     $('upload-tracks').replaceChildren(...result.tracks.map(t => track(t)));
     $('upload-timing').textContent = `Separated in ${result.seconds.toFixed(2)} seconds. Listen or download each track.`;
     $('upload-results').hidden = false;
-    status('Your three separated tracks are ready.');
+    status(`Your ${result.tracks.length} separated tracks are ready.`);
   } catch (error) { showError(error); status('Could not separate this file. Check the message and try again.'); }
   finally { setBusy(false); }
 }
 function history(info) {
   if (!info.history.length) { $('history-summary').textContent = 'No epoch history available.'; return; }
-  const rows = info.history;
-  const values = rows.flatMap(r => [-r['train/loss'], r['validation/si_sdr']]);
+  const rows = info.history.map(r => ({ ...r, 'train/si_sdr': r['train/si_sdr'] ?? -r['train/loss'] }));
+  const values = rows.flatMap(r => [r['train/si_sdr'], r['validation/si_sdr']]);
   const low = Math.min(...values), high = Math.max(...values) + 0.1;
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 250 100'); svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', 'Training and validation SI-SDR over completed epochs');
-  for (const [field, color, dashed] of [['train/loss', 'var(--muted)', true], ['validation/si_sdr', 'var(--accent)', false]]) {
+  for (const [field, color, dashed] of [['train/si_sdr', 'var(--muted)', true], ['validation/si_sdr', 'var(--accent)', false]]) {
     const line = document.createElementNS(svg.namespaceURI, 'polyline');
-    line.setAttribute('points', rows.map((r, i) => `${10 + i / Math.max(1, rows.length - 1) * 230},${90 - ((field === 'train/loss' ? -r[field] : r[field]) - low) / (high - low) * 80}`).join(' '));
+    line.setAttribute('points', rows.map((r, i) => `${10 + i / Math.max(1, rows.length - 1) * 230},${90 - (r[field] - low) / (high - low) * 80}`).join(' '));
     line.setAttribute('fill', 'none'); line.setAttribute('stroke', color); line.setAttribute('stroke-width', '2');
     if (dashed) line.setAttribute('stroke-dasharray', '4 3'); svg.append(line);
   }
   $('history').append(svg);
   const last = rows.at(-1);
-  $('history-summary').textContent = `${rows.length} epochs logged. Dashed: training; solid: validation. Last epoch: ${(-last['train/loss']).toFixed(2)} / ${last['validation/si_sdr'].toFixed(2)} dB.`;
+  $('history-summary').textContent = `${rows.length} epochs logged. Dashed: training; solid: validation. Last epoch: ${last['train/si_sdr'].toFixed(2)} / ${last['validation/si_sdr'].toFixed(2)} dB.`;
 }
 document.addEventListener('play', event => {
   if (event.target.tagName === 'AUDIO') document.querySelectorAll('audio').forEach(audio => { if (audio !== event.target) audio.pause(); });
@@ -206,6 +206,11 @@ for (const name of ['dragleave', 'drop']) $('dropzone').addEventListener(name, e
 $('dropzone').addEventListener('drop', event => chooseFile(event.dataTransfer.files[0]));
 api('/api/info').then(info => {
   state.info = info;
+  const modelName = { afrcnn: 'A-FRCNN', conv_tasnet: 'Conv-TasNet' }[info.model] || info.model;
+  $('model-label').textContent = `${modelName} / ${info.sources} speakers`;
+  $('source-count-note').textContent = `This checkpoint estimates ${info.sources} speaker tracks. Speaker activity may vary within the recording.`;
+  $('heading').innerHTML = `One mixture.<br>${info.sources} voices.`;
+  $('upload-heading').textContent = `${info.sources} estimated voices.`;
   $('device').textContent = `${info.device.toUpperCase()} ready`;
   $('checkpoint').textContent = `Best model · epoch ${info.epoch}`;
   $('checkpoint-score').textContent = `${info.validation_si_sdr.toFixed(2)} dB validation SI-SDR`;

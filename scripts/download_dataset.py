@@ -163,7 +163,7 @@ def download_dataset(config):
     if (not options["mirrors"] or options["workers"] < 1 or options["chunk_bytes"] < 1
             or options["timeout_seconds"] <= 0 or options["retries"] < 0
             or options["retry_delay_seconds"] < 0 or options["progress_seconds"] <= 0):
-        raise ValueError("Invalid download settings; check config/download.yaml")
+        raise ValueError("Invalid download settings; check the selected download YAML")
     root = project_path(config["root"])
     root.mkdir(parents=True, exist_ok=True)
     # Prevent two processes from modifying the same download/preparation files.
@@ -189,18 +189,24 @@ def download_dataset(config):
         report = prepare(prepared_config)
         LOGGER.info("Dataset ready: %s (%.2f GB including cached archives)",
                     root, report["final_bytes"] / 1e9)
-        LOGGER.info("For training, set data.root: %s in config/train.yaml", config["root"])
+        dataset = f"libri{config.get('sources', 3)}mix"
+        LOGGER.info("For training, set data.dataset: %s and data.roots.%s: %s in config/train.yaml",
+                    dataset, dataset, config["root"])
         return report
 
 
-if __name__ == "__main__":
+def main(config_name="download.yaml"):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         datefmt="%H:%M:%S")
     try:
-        download_dataset(load_config("download.yaml"))
+        download_dataset(load_config(config_name))
     except KeyboardInterrupt:
         LOGGER.warning("Stopped. Run the same command to resume.")
         raise SystemExit(130)
     except Exception:
         LOGGER.exception("Dataset download/preparation failed. Existing files are preserved.")
         raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

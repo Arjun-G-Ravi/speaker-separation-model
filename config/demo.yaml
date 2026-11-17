@@ -1,4 +1,4 @@
-checkpoint: out/2026-11-11_07-00-31_005338/best.pt
+checkpoint: out/2026-11-14_19-52-54_688479/best.pt
 device: auto
 host: 127.0.0.1
 port: 7860

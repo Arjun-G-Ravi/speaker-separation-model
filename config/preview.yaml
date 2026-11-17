@@ -1,0 +1,5 @@
+checkpoint: out/2026-11-15_12-03-09_059720/best.pt
+device: cpu
+test_examples: 3
+train_examples: 2
+max_seconds: null

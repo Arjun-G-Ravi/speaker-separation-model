@@ -1,6 +1,7 @@
 import hashlib
 import json
 import random
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +20,23 @@ def load_config(name):
 def project_path(value):
     path = Path(value)
     return path if path.is_absolute() else ROOT / path
+
+
+def resolve_training_config(config):
+    """Resolve the selected dataset root and output count without modifying source YAML."""
+    config = deepcopy(config)
+    data = config["data"]
+    if "dataset" in data:
+        counts = {"libri2mix": 2, "libri3mix": 3}
+        if data["dataset"] not in counts:
+            raise ValueError("data.dataset must be libri2mix or libri3mix")
+        if "roots" in data:
+            data["root"] = data.pop("roots")[data["dataset"]]
+        sources = counts[data["dataset"]]
+        if config["model"].get("sources", sources) != sources:
+            raise ValueError("model.sources disagrees with data.dataset; omit it for automatic selection")
+        config["model"]["sources"] = sources
+    return config
 
 
 def select_device(value):

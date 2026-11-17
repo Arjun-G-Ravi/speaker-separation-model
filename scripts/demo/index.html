@@ -11,7 +11,7 @@
   <a class="skip" href="#workspace">Skip to audio workspace</a>
   <header class="masthead">
     <div class="brand"><svg viewBox="0 0 28 28" aria-hidden="true"><path d="M3 11v6m5-13v20m6-16v12m6-18v24m5-16v8"/></svg><span>Listening room<span class="brand-note">SPEECH SEPARATION LAB</span></span></div>
-    <div class="model-status"><span class="status-dot"></span><span id="device">Loading model…</span><span class="pill">Conv-TasNet / 3 speakers</span></div>
+    <div class="model-status"><span class="status-dot"></span><span id="device">Loading model…</span><span class="pill" id="model-label">Loading checkpoint…</span></div>
   </header>
   <div class="layout">
     <aside class="library" aria-label="Audio library">
@@ -29,11 +29,11 @@
         <div id="sample-list" class="sample-list" aria-label="Dataset examples"></div>
         <div class="pagination"><button id="previous" aria-label="Previous page">← Previous</button><span id="page"></span><button id="next" aria-label="Next page">Next →</button></div>
       </div>
-      <div id="upload-library-note" hidden><h2>A new listening test.</h2><p>Bring a mixture with up to three overlapping speakers. The model will estimate a separate track for each.</p><p class="muted">Speaker numbers are arbitrary for uploaded audio.</p></div>
+      <div id="upload-library-note" hidden><h2>A new listening test.</h2><p id="source-count-note">The model will estimate one track per configured speaker.</p><p class="muted">Speaker numbers are arbitrary for uploaded audio.</p></div>
       <div class="checkpoint-note"><span class="eyebrow">LOADED CHECKPOINT</span><p id="checkpoint">Loading…</p><p id="checkpoint-score"></p><details><summary>Training history</summary><div id="history"></div><p id="history-summary" class="muted"></p></details></div>
     </aside>
     <main id="workspace" tabindex="-1">
-      <div class="workspace-heading"><div><p class="eyebrow">02 / LISTEN & COMPARE</p><h1 id="heading">One mixture.<br>Three voices.</h1></div><span class="index-tag" id="example-number"></span></div>
+      <div class="workspace-heading"><div><p class="eyebrow">02 / LISTEN & COMPARE</p><h1 id="heading">One mixture.<br>Separate voices.</h1></div><span class="index-tag" id="example-number"></span></div>
       <p id="status" role="status" aria-live="polite">Loading the dataset…</p>
       <div id="error" role="alert" hidden></div>
       <section id="dataset-panel" aria-label="Dataset comparison">
@@ -51,7 +51,7 @@
           <label id="dropzone" class="dropzone" for="audio-file"><span class="upload-mark" aria-hidden="true">↑</span><strong>Give the model something to listen to.</strong><span>Drop an audio file here, or choose one below.</span><input id="audio-file" type="file" accept="audio/*,.m4a,.aac,.opus,.aiff,.flac,.wav"><span id="upload-limit" class="muted"></span></label>
           <div class="upload-actions"><p id="selected-file">No file selected</p><button id="run-upload" class="primary" type="submit" disabled>Separate audio ↗</button></div>
         </form>
-        <div id="upload-results" hidden><h2>Your mixture</h2><div id="upload-mixture"></div><div class="section-toolbar"><div><h2>Three estimated voices.</h2><p id="upload-timing"></p></div><span class="pill">No reference recordings</span></div><div id="upload-tracks" class="upload-tracks"></div><p class="footnote">There is no ground truth for uploads, so SI-SDR cannot be measured. Output order does not identify a particular speaker. Tracks are 8 kHz WAV files.</p></div>
+        <div id="upload-results" hidden><h2>Your mixture</h2><div id="upload-mixture"></div><div class="section-toolbar"><div><h2 id="upload-heading">Estimated voices.</h2><p id="upload-timing"></p></div><span class="pill">No reference recordings</span></div><div id="upload-tracks" class="upload-tracks"></div><p class="footnote">There is no ground truth for uploads, so SI-SDR cannot be measured. Output order does not identify a particular speaker. Tracks are 8 kHz WAV files.</p></div>
       </section>
     </main>
   </div>
