@@ -1,7 +1,8 @@
 # Speech separation with A-FRCNN and Conv-TasNet
 
-Noncausal PyTorch speech separation for mono audio at 8 kHz. The default model is
-A-FRCNN-16; the original Conv-TasNet is preserved in `src/conv_tasnet.py`, including
+Noncausal PyTorch speech separation for mono audio at 8 kHz. The default experiment
+uses A-FRCNN with an earlier speaker split; the original Conv-TasNet is preserved
+in `src/conv_tasnet.py`, including
 compatibility with existing checkpoints. Models map `[batch, samples]` to
 `[batch, sources, samples]`, with two or three sources selected by the dataset.
 Source identities are unordered; speaker 1 does not identify the same person
@@ -269,6 +270,12 @@ the fixed crop. Active crops are retried up to `crop_attempts`; exhausting retri
 raises an error. Disable dynamic mixing to train on synchronized crops of the
 original mixtures. Prepared PCM16 WAVs are memory-mapped and cropped before float
 conversion, so training reads only the selected window from each track.
+The `speed_perturbation` experiment independently samples each source's playback
+speed from 95%, 100%, and 105% before RMS normalization and remixing. Polyphase
+resampling changes both speed and pitch, then crops to the fixed training length.
+If a speed-up reaches the end of a short source, the remainder is zero-padded.
+The output sample rate remains 8 kHz. Augmentation is deterministic by seed, epoch,
+and sample index across loader workers; validation and test are never augmented.
 Audio is loaded per example rather than caching the full dataset in RAM; workers
 prefetch a bounded number of batches. Validation uses complete recordings individually.
 Test evaluation reports both full recordings and deterministic centered 10-second
@@ -291,9 +298,34 @@ upstream MIT license are in `THIRD_PARTY_NOTICES.md`.
 `src/conv_tasnet.py` preserves the original
 [Conv-TasNet](https://arxiv.org/abs/1809.07454) encoder/decoder and dilated temporal
 separator. Existing checkpoints retain their original architecture settings.
-`src/model.py` selects either model using `model.name` (`afrcnn` or `conv_tasnet`).
+`src/model.py` selects `afrcnn`, `early_split_afrcnn`, or `conv_tasnet` using `model.name`.
 Architecture-specific YAML fields must match the selected constructor; to retrain
 the baseline, use the `model` section saved with that baseline run.
+
+`src/earlier_speaker_split/model.py` adds the `early_split_afrcnn` variant. It runs
+eight mixture refinement iterations, splits the bottleneck features into two or
+three streams through a convolution and GLU, then refines each stream eight more
+times. `split_iteration` sets the split point within the total `iterations`.
+The same A-FRCNN block and residual projection are shared across both phases and
+all speakers. After splitting, sources are folded into the batch dimension so
+normalization and temporal processing operate independently for each speaker.
+A shared mask head and single-source waveform decoder reconstruct every stream.
+This replaces the baseline's joint waveform decoder, so a comparison measures
+the combined split-and-shared-decoder change. No attention, speaker embeddings,
+cross-speaker module, or auxiliary loss is added. This is a CNN adaptation of the
+early split/shared reconstruction idea from
+[Separate and Reconstruct](https://arxiv.org/abs/2406.05983), not a SepReformer reproduction.
+
+Speaker refinement uses activation checkpointing during training to reduce memory
+by recomputing block activations during backward. Inference runs directly. Sharing
+weights does not remove the extra speaker-stream computation; GPU memory and
+runtime still need measurement on the 3090. This architecture needs a fresh run.
+Evaluation, inference, W&B, and checkpoint loading use the existing entry points.
+Run the synthetic checks with:
+
+```fish
+/home/arjun/ai_env/bin/python -m scripts.check_earlier_speaker_split
+```
 
 Utterance-level PIT selects the best of all source permutations (two for Libri2Mix,
 six for Libri3Mix) independently
@@ -319,11 +351,34 @@ resumed into an old experiment. Run `/home/arjun/ai_env/bin/python -m src.train`
 to train with W&B using the existing environment. No speech-quality improvement
 is established until that run is evaluated.
 
-Adam starts at `1e-3`, with batch size 4 and one-step accumulation. Gradients are
+Adam starts at `1e-3`, with batch size 8 and one-step accumulation. Gradients are
 unscaled before clipping at norm 5. Validation SI-SDR selects the best model;
 ReduceLROnPlateau halves the rate after its configured patience, and early stopping
-ends training after ten unimproved epochs. Maximum training length is 100 epochs.
+ends training after 30 unimproved epochs, allowing more time to recover from a
+validation dip. Maximum training length is 200 epochs.
 These are baseline settings, not a promise of separation quality on this subset.
+Select `experiment` at the top of `config/train.yaml` and run each comparison
+separately with `checkpoint.resume: null`:
+
+| Experiment | Scale-loss weight | Speed perturbation | Comparison |
+| --- | ---: | --- | --- |
+| `earlier_speaker_split` (default) | 1.0 | Off | Early split A-FRCNN; compare with `baseline_200` |
+| `baseline_200` | 1.0 | Off | Longer training with the existing objective |
+| `si_sdr_only` | 0.0 | Off | Isolates removal of the scale loss |
+| `speed_perturbation` | 0.0 | On | Compare with `si_sdr_only` to isolate augmentation |
+
+The `experiments` entries override the common `model`, `data`, and `training` settings when
+the training YAML is loaded. Resolved settings, including the experiment name,
+are saved with each run and sent to W&B. The optimizer, learning rate, scheduler,
+precision, crop length, and effective batch size are identical across these runs.
+Select using validation results, then evaluate the selected checkpoint on test.
+At the previous run's epoch time, 200 epochs would take about 22 hours;
+augmentation and hardware load can change that estimate. There is no wall-clock cutoff.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.train
+```
+
 Each epoch prints training batch progress and validation example progress at
 `training.log_every_steps` intervals, alongside the existing local and W&B metrics.
 

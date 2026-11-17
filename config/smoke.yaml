@@ -5,6 +5,16 @@ examples: 3
 overfit_steps: 80
 learning_rate: 0.003
 minimum_improvement_db: 2.0
+earlier_speaker_split:
+  name: early_split_afrcnn
+  encoder_channels: 16
+  kernel_size: 21
+  stride: 10
+  bottleneck_channels: 8
+  hidden_channels: 16
+  stages: 3
+  iterations: 16
+  split_iteration: 8
 afrcnn:
   name: afrcnn
   encoder_channels: 16

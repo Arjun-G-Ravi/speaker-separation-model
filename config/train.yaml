@@ -1,3 +1,21 @@
+# Run each experiment separately with checkpoint.resume: null.
+experiment: earlier_speaker_split
+experiments:
+  baseline_200: {}
+  earlier_speaker_split:
+    model:
+      name: early_split_afrcnn
+      split_iteration: 8
+  si_sdr_only:
+    training:
+      scale_loss_weight: 0.0
+  speed_perturbation:
+    training:
+      scale_loss_weight: 0.0
+    data:
+      speed_perturbation:
+        enabled: true
+        speeds: [95, 100, 105]
 model:
   name: afrcnn
   # Output sources are derived from data.dataset.
@@ -19,6 +37,9 @@ data:
   sample_rate: 8000
   segment_seconds: 3
   fixed_crops: true
+  speed_perturbation:
+    enabled: false
+    speeds: [95, 100, 105]  # Percent playback speed; sampled independently per source.
   dynamic_mixing:
     enabled: true
     source_rms: 0.05
@@ -32,14 +53,14 @@ training:
   batch_size: 8
   accumulation_steps: 1
   workers: 2
-  epochs: 100
+  epochs: 200
   learning_rate: 0.001
   weight_decay: 0.0
   gradient_clip: 5.0
   scale_loss_weight: 1.0
   scheduler_patience: 3
   scheduler_factor: 0.5
-  early_stopping_patience: 10
+  early_stopping_patience: 30
   log_every_steps: 20
 checkpoint:
   resume: null

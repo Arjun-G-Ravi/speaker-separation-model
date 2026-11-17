@@ -19,7 +19,7 @@ from src.settings import load_config, load_model, resolve_training_config, seed_
 from src.train import run_training
 
 
-def main():
+def main(model_key="afrcnn"):
     settings = load_config("smoke.yaml")
     torch.set_num_threads(2)
     seed_all(settings["seed"])
@@ -33,7 +33,7 @@ def main():
         assert resolved["model"]["sources"] == count
         assert resolved["data"]["root"] == config["data"]["roots"][dataset]
         assert "sources" not in config["model"]
-        model = build_model({**settings["afrcnn"], "sources": count})
+        model = build_model({**settings[model_key], "sources": count})
         for length in (1, 15, 21, 159, 160, 257, 24000, 80003):
             with torch.inference_mode():
                 output = model(torch.randn(2, length))
@@ -41,7 +41,7 @@ def main():
         parameter_count = sum(p.numel() for p in model.parameters())
         model.iterations = 1
         assert sum(p.numel() for p in model.parameters()) == parameter_count
-        model.iterations = settings["afrcnn"]["iterations"]
+        model.iterations = settings[model_key]["iterations"]
         target = torch.randn(2, count, 257)
         pit_loss(model(target.sum(1)), target, scale_weight=1).backward()
         assert all(p.grad is None or torch.isfinite(p.grad).all() for p in model.parameters())
@@ -60,7 +60,7 @@ def main():
             manifest = json.loads(before)
             assert manifest["dataset"] == f"Libri{count}Mix"
             assert all(len(row["sources"]) == count for row in manifest["examples"])
-            config["model"] = copy.deepcopy(settings["afrcnn"])
+            config["model"] = copy.deepcopy(settings[model_key])
             config["data"]["roots"][dataset] = prep["root"]
             config["data"]["segment_seconds"] = settings["seconds"]
             config["training"].update(epochs=2, workers=0, device="cpu", batch_size=2)
@@ -92,7 +92,7 @@ def main():
                 pass
             else:
                 raise AssertionError("Dataset/model source-count mismatch was accepted")
-        print(f"A-FRCNN-16: {count}-source shapes, gradients, preparation, mixing, "
+        print(f"{model_key}: {count}-source shapes, gradients, preparation, mixing, "
               "training, checkpoint reload, evaluation, and inference passed", flush=True)
 
 

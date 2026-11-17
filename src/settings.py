@@ -14,7 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def load_config(name):
     with (ROOT / "config" / name).open() as handle:
-        return yaml.safe_load(handle)
+        config = yaml.safe_load(handle)
+    if name == "train.yaml" and "experiments" in config:
+        experiments = config.pop("experiments")
+        selected = config.get("experiment")
+        if selected not in experiments:
+            raise ValueError(f"experiment must be one of: {', '.join(experiments)}")
+        for section, overrides in experiments[selected].items():
+            config[section].update(overrides)
+    return config
 
 
 def project_path(value):

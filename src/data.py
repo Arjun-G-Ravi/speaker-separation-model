@@ -1,17 +1,19 @@
 import json
+import math
 import random
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from src.audio import read_audio
+from src.audio import read_audio, resample
 from src.settings import project_path, resolve_training_config
 
 
 class SeparationDataset(Dataset):
     def __init__(self, root, manifest, sample_rate, segment_seconds=None, random_crop=False,
-                 fixed_crops=False, dynamic_mixing=None, seed=0, sources=3):
+                 fixed_crops=False, dynamic_mixing=None, seed=0, sources=3,
+                 speed_perturbation=None):
         self.root = project_path(root)
         manifest_path = self.root / manifest
         if not manifest_path.is_file():
@@ -28,6 +30,14 @@ class SeparationDataset(Dataset):
         self.random_crop = random_crop
         self.seed = seed
         self.mixing = dynamic_mixing if dynamic_mixing and dynamic_mixing["enabled"] else None
+        self.speeds = None
+        if speed_perturbation and speed_perturbation["enabled"]:
+            if not self.mixing:
+                raise ValueError("Source speed perturbation requires dynamic mixing")
+            self.speeds = speed_perturbation["speeds"]
+            if not self.speeds or any(type(speed) is not int or speed <= 0
+                                      for speed in self.speeds):
+                raise ValueError("speed_perturbation.speeds must be positive integer percentages")
         if fixed_crops or self.mixing:
             if not self.segment or self.segment <= 0:
                 raise ValueError("Fixed crops and dynamic mixing require a positive segment_seconds")
@@ -85,13 +95,19 @@ class SeparationDataset(Dataset):
     def mix_sources(self, rng):
         targets, identifiers = [], []
         for speaker in rng.sample(list(self.speakers), self.sources):
+            speed = rng.choice(self.speeds) if self.speeds else 100
             for _ in range(self.mixing["crop_attempts"]):
                 path, length, utterance = rng.choice(self.speakers[speaker])
-                start = rng.randint(0, length - self.segment)
-                rate, audio = read_audio(self.root / path, start=start, frames=self.segment)
-                if (rate != self.rate or audio.ndim != 1 or len(audio) != self.segment
+                frames = min(length, math.ceil(self.segment * speed / 100))
+                start = rng.randint(0, length - frames)
+                rate, audio = read_audio(self.root / path, start=start, frames=frames)
+                if (rate != self.rate or audio.ndim != 1 or len(audio) != frames
                         or not np.isfinite(audio).all()):
                     raise ValueError(f"Invalid training source: {path}")
+                audio = resample(audio, speed, 100)[:self.segment]
+                # Short utterances may end before a speed-up supplies a complete crop.
+                if len(audio) < self.segment:
+                    audio = np.pad(audio, (0, self.segment - len(audio)))
                 if np.var(audio) > 1e-10:
                     break
             else:
@@ -99,7 +115,7 @@ class SeparationDataset(Dataset):
             rms = float(np.sqrt(np.mean(audio ** 2)))
             gain = self.mixing["source_rms"] * 10 ** (rng.uniform(*self.mixing["gain_db"]) / 20)
             targets.append(torch.from_numpy(audio * (gain / rms)))
-            identifiers.append(f"{utterance}@{start}")
+            identifiers.append(f"{utterance}@{start}" + (f":speed={speed}" if self.speeds else ""))
         target = torch.stack(targets)
         mixture = target.sum(0)
         peak = max(float(mixture.abs().max()), float(target.abs().max()))
@@ -134,6 +150,7 @@ def make_loader(config, split, epoch=0, crop_seconds=None):
         data["segment_seconds"] if is_train else crop_seconds, is_train,
         fixed_crops=is_train and data.get("fixed_crops", False),
         dynamic_mixing=data.get("dynamic_mixing") if is_train else None,
+        speed_perturbation=data.get("speed_perturbation") if is_train else None,
         seed=training["seed"] + epoch * 1_000_003,
         sources=config["model"]["sources"],
     )

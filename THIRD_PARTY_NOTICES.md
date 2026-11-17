@@ -20,6 +20,12 @@ Dataset sources are fetched only when the user runs preparation. No speech is bu
   https://github.com/JusperLee/AFRCNN-For-Speech-Separation/blob/master/AFRCNN.py.
   Normalization reductions use float32 here, and inputs use the project's `[B,T]`
   interface. Upstream license follows.
+- Earlier speaker split: `src/earlier_speaker_split/model.py` reuses the A-FRCNN
+  adaptation above and adds an independently implemented convolutional speaker
+  split and shared reconstruction. The design is inspired by Ui-Hyeop Shin,
+  Sangyoun Lee, Taehan Kim, and Hyung-Min Park, “Separate and Reconstruct:
+  Asymmetric Encoder-Decoder for Speech Separation,” NeurIPS 2024.
+  https://arxiv.org/abs/2406.05983. No SepReformer source code is copied.
 
 ## Upstream A-FRCNN license
 

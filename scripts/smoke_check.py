@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import numpy as np
 import torch
+import yaml
 from scipy.io import wavfile
 
 from scripts.prepare_data import StorageBudget, prepare
@@ -179,6 +180,7 @@ def training_data_checks(config):
         assert loader.dataset.mixing is None and loader.dataset.segment is None
     fixed = copy.deepcopy(config)
     fixed["data"]["dynamic_mixing"]["enabled"] = False
+    fixed["data"]["speed_perturbation"] = {"enabled": False}
     assert all((batch[2] == segment).all() for batch in make_loader(fixed, "train"))
     loud = copy.deepcopy(config)
     loud["data"]["dynamic_mixing"]["source_rms"] = 5
@@ -199,6 +201,61 @@ def training_data_checks(config):
             assert "active crop" in str(error)
         else:
             raise AssertionError("Dynamic mixing accepted silent crops")
+    speed_perturbation_checks(config)
+
+
+def speed_perturbation_checks(config):
+    augmented = copy.deepcopy(config)
+    augmented["data"]["speed_perturbation"] = {"enabled": True, "speeds": [95, 100, 105]}
+    first = list(make_loader(augmented, "train", epoch=2))
+    augmented["training"]["workers"] = 2
+    parallel = list(make_loader(augmented, "train", epoch=2))
+    for batch, other in zip(first, parallel):
+        assert batch[3] == other[3]
+        torch.testing.assert_close(batch[1], other[1], atol=0, rtol=0)
+        torch.testing.assert_close(batch[0], batch[1].sum(1), atol=0, rtol=0)
+        assert torch.isfinite(batch[1]).all()
+        assert batch[1].abs().max() <= config["data"]["dynamic_mixing"]["peak_limit"] + 1e-6
+    assert first[0][3] != next(iter(make_loader(augmented, "train", epoch=3)))[3]
+    for split in ("validation", "test"):
+        assert make_loader(augmented, split).dataset.speeds is None
+        original = next(iter(make_loader(config, split)))
+        actual = next(iter(make_loader(augmented, split)))
+        torch.testing.assert_close(original[0], actual[0], atol=0, rtol=0)
+        torch.testing.assert_close(original[1], actual[1], atol=0, rtol=0)
+
+    dataset = make_loader(augmented, "train").dataset
+    segment = dataset.segment
+    frequency = 1000
+
+    def tone(path, *, start, frames):
+        audio = np.sin(2 * np.pi * frequency * np.arange(frames) / dataset.rate)
+        return dataset.rate, audio.astype(np.float32)
+
+    for speed in (95, 100, 105):
+        dataset.speeds = [speed]
+        with patch("src.data.read_audio", side_effect=tone):
+            mixture, sources, length, _ = dataset[0]
+        assert sources.shape == (dataset.sources, segment) and length == segment
+        torch.testing.assert_close(mixture, sources.sum(0), atol=0, rtol=0)
+        spectrum = np.abs(np.fft.rfft(sources[0].numpy()))
+        observed = np.argmax(spectrum) * dataset.rate / segment
+        assert abs(observed - frequency * speed / 100) <= dataset.rate / segment
+    # An utterance exactly one crop long still works at the fastest speed.
+    dataset.speeds = [105]
+    dataset.speakers = {speaker: [(path, segment, utterance) for path, _, utterance in tracks]
+                        for speaker, tracks in dataset.speakers.items()}
+    with patch("src.data.read_audio", side_effect=tone):
+        _, sources, _, _ = dataset[0]
+    assert sources.shape[-1] == segment and (sources[:, -1] == 0).all()
+    for speeds in ([], [0], [-95], [95.5], [True]):
+        augmented["data"]["speed_perturbation"]["speeds"] = speeds
+        try:
+            make_loader(augmented, "train")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"Invalid speeds accepted: {speeds}")
 
 
 def main():
@@ -207,6 +264,27 @@ def main():
     seed_all(settings["seed"])
     loss_checks(settings["model"])
     accumulation_check(settings["model"])
+    raw = yaml.safe_load((ROOT / "config" / "train.yaml").read_text())
+    for name, weight, enabled in (("baseline_200", 1.0, False),
+                                   ("si_sdr_only", 0.0, False),
+                                   ("speed_perturbation", 0.0, True)):
+        selected = copy.deepcopy(raw)
+        selected["experiment"] = name
+        with patch("src.settings.yaml.safe_load", return_value=selected):
+            resolved = load_config("train.yaml")
+        assert "experiments" not in resolved
+        assert resolved["training"]["scale_loss_weight"] == weight
+        assert resolved["data"]["speed_perturbation"]["enabled"] == enabled
+        assert resolved["training"]["epochs"] == 200
+    invalid = copy.deepcopy(raw)
+    invalid["experiment"] = "unknown"
+    with patch("src.settings.yaml.safe_load", return_value=invalid):
+        try:
+            load_config("train.yaml")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unknown experiment was accepted")
     with tempfile.TemporaryDirectory(prefix="speech-smoke-") as folder:
         root = Path(folder)
         archives, metadata = make_fixture(root, settings)
@@ -276,6 +354,8 @@ def main():
                                      "batch_size": 2, "accumulation_steps": 2})
         training["logging"]["wandb_mode"] = "disabled"
         training_data_checks(training)
+        training["data"]["speed_perturbation"] = {"enabled": True, "speeds": [95, 100, 105]}
+        training["training"]["scale_loss_weight"] = 0.0
         worker_config = copy.deepcopy(training)
         worker_config["training"]["workers"] = 2
         assert sum(len(batch[0]) for batch in make_loader(worker_config, "train")) == settings["examples"]
