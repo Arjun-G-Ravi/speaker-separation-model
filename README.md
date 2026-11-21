@@ -40,6 +40,44 @@ After training A-FRCNN, set the new checkpoint in `config/demo.yaml`,
 `config/evaluate.yaml`, `config/inference.yaml`, or `config/preview.yaml` as needed.
 Those tools recover the architecture and source count from the checkpoint.
 
+## Pilot 1: expand the LibriSpeech source pool
+
+The three matched Libri2Mix pilots fine-tune the epoch 138 early-split model.
+A uses the original source pool. B also calibrates the decoder's gain and polarity.
+C uses the calibrated decoder and remixes full source utterances from cached
+`train-clean-100`. All three retain 5,000 training draws per epoch and select
+their best checkpoint on the existing 500 validation recordings.
+
+Edit `config/pilot1_librispeech_expansion.yaml` to choose the arm. Prepare the
+source pool once before arm C, using the cached archive. The preparation command
+requires no network and uses up to 8 GB of additional storage.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_librispeech_expansion.prepare
+/home/arjun/ai_env/bin/python -m src.pilot1_librispeech_expansion.train
+```
+
+Run training once per arm (A, B, C) on the RTX 3090. The command checks one full
+batch before starting each arm, then prints its `out/<run_id>/best.pt` path.
+For an interrupted arm, set `resume` to its `recovery.pt` and keep the same arm.
+Clear `resume` before moving to the next arm. W&B settings come from the baseline
+checkpoint's training configuration.
+
+Fill in the three `evaluation.checkpoints` paths. Run the command below with
+`selection_report: null` to compare the original checkpoint and the three pilots
+on validation. It saves the selected arm and projection decision to
+`logs/pilot1_<timestamp>/validation.json`. Once the choice is locked, set
+`selection_report` to that file and run the same command to evaluate the original
+checkpoint and the selected arm on the test set. If no arm clears the validation
+gate, the test report covers only the original checkpoint.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_librispeech_expansion.evaluate
+```
+
+For listening previews of B or C, use `playback_gain_db: 0` in
+`config/preview.yaml`. Their decoder already incorporates the calibration.
+
 ## Local listening room
 
 Run the dataset browser and upload inference UI in your uv environment:

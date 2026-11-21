@@ -46,9 +46,14 @@ def training_chart(rows):
 @torch.inference_mode()
 def main():
     torch.set_num_threads(4)
+    playback_boost = 10 ** (SETTINGS.get('playback_gain_db', 0) / 20)
     device = select_device(SETTINGS['device'])
     model, state = load_model(CHECKPOINT, device)
-    model_name = {'afrcnn': 'A-FRCNN', 'conv_tasnet': 'Conv-TasNet'}[state['config']['model']['name']]
+    model_name = {
+        'afrcnn': 'A-FRCNN',
+        'conv_tasnet': 'Conv-TasNet',
+        'early_split_afrcnn': 'Early-split A-FRCNN',
+    }[state['config']['model']['name']]
     rate = state['config']['data']['sample_rate']
     data_root = project_path(state['config']['data']['root'])
     examples = []
@@ -119,7 +124,8 @@ def main():
         score = pairwise_si_sdr(torch.from_numpy(estimate)[None],target)[0].diag()
         baseline = pairwise_si_sdr(torch.from_numpy(mixture)[None,None].expand_as(target),target)[0].diag()
         wavfile.write(sample/'mixture.wav',rate,mixture.astype(np.float32))
-        playback, gain = playback_audio(estimate)
+        playback, attenuation = playback_audio(estimate * playback_boost)
+        gain = playback_boost * attenuation
         raw_folder = sample/'raw_predictions'
         raw_folder.mkdir()
         for i in range(model.sources):
@@ -163,7 +169,7 @@ def main():
 <style>body{{margin:0;background:#f4f3ec;color:#19332e;font:16px/1.6 'DejaVu Sans',sans-serif}}main{{max-width:1050px;margin:auto;padding:40px 24px}}h1,h2{{font-family:Georgia,serif;font-weight:400}}h1{{font-size:42px}}h2{{font-size:29px}}h3{{font-size:14px}}a{{color:#11634b;font-size:13px}}section{{border-top:1px solid #c9d2c8;margin-top:36px;padding-top:20px}}.columns{{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px}}.tracks{{border-top:1px solid #d4dcd4;padding:16px 0}}audio{{display:block;width:100%;margin:10px 0}}.id{{font-family:monospace;overflow-wrap:anywhere}}svg{{width:100%;background:#fffefa}}svg text{{font:12px monospace;fill:#19332e}}table{{border-collapse:collapse;width:100%}}td,th{{text-align:left;padding:10px;border-bottom:1px solid #d4dcd4}}.note{{background:#e3ece3;padding:18px}}@media(max-width:640px){{.columns{{grid-template-columns:1fr}}h1{{font-size:32px}}}}a:focus-visible{{outline:3px solid #a84928}}</style>
 <main><p class="id">{model_name.upper()} / TRAIN AND TEST LISTENING PREVIEW</p><h1>One mixture. {model.sources} estimated voices.</h1>
 <p>{SETTINGS['test_examples']} held-out test examples and {SETTINGS['train_examples']} training examples from run <span class="id">{state['run_id']}</span>, using its best checkpoint (epoch {state['next_epoch']}).</p>
-<div class="note"><strong>Test preview: {split_metrics['test']['mean_si_sdr_db']:.2f} dB SI-SDR · {split_metrics['test']['mean_si_sdri_db']:.2f} dB improvement.<br>Training preview: {split_metrics['train']['mean_si_sdr_db']:.2f} dB SI-SDR · {split_metrics['train']['mean_si_sdri_db']:.2f} dB improvement.</strong><br>Training examples contain speech used during training. Scores are reported separately by split. These small previews do not measure full-dataset performance. Outputs are reordered using references for comparison. Prediction playback uses one shared attenuation per example to prevent clipping. SI-SDR does not measure playback loudness or guarantee intelligibility.</div>
+<div class="note"><strong>Test preview: {split_metrics['test']['mean_si_sdr_db']:.2f} dB SI-SDR · {split_metrics['test']['mean_si_sdri_db']:.2f} dB improvement.<br>Training preview: {split_metrics['train']['mean_si_sdr_db']:.2f} dB SI-SDR · {split_metrics['train']['mean_si_sdri_db']:.2f} dB improvement.</strong><br>Training examples contain speech used during training. Scores are reported separately by split. These small previews do not measure full-dataset performance. Outputs are reordered using references for comparison. Both predicted speakers receive the same playback gain, reduced when needed to prevent clipping. SI-SDR does not measure playback loudness or guarantee intelligibility.</div>
 <h2>Training details</h2><table><tr><th>Dataset</th><td>{counts['train']} training / {counts['validation']} validation / {counts['test']} test mixtures</td></tr><tr><th>Completed epochs</th><td>{len(rows)}; early stopping: {details['early_stopped']}</td></tr><tr><th>Best validation SI-SDR</th><td>{best['validation/si_sdr']:.2f} dB, epoch {best['epoch']}</td></tr><tr><th>Final training / validation SI-SDR</th><td>{details['final_training_si_sdr_db']:.2f} / {last['validation/si_sdr']:.2f} dB</td></tr><tr><th>Logged epoch time</th><td>{details['logged_epoch_minutes']:.1f} minutes</td></tr><tr><th>Optimizer</th><td>Adam, initial learning rate {state['config']['training']['learning_rate']}, batch {state['config']['training']['batch_size']}, accumulation {state['config']['training']['accumulation_steps']}</td></tr><tr><th>Inference</th><td>{device}, float32, 8 kHz; complete recordings</td></tr></table>
 <p>Training uses random crops; validation uses full recordings. Preview policy: {details['crop_policy']}. Training: gray line; validation: green line. Vertical axis: SI-SDR in dB.</p>{chart}<p><a href="training/train.yaml">Training configuration</a> · <a href="training/details.json">Full training details</a> · <a href="training/metrics.jsonl">Raw training logs</a> · <a href="summary.json">Inference metrics</a></p>
 {''.join(panels)}</main></html>'''
@@ -181,7 +187,7 @@ def main():
         report.append(f"\n{split.title()} preview: {metrics['mean_si_sdr_db']:.3f} dB SI-SDR; {metrics['mean_si_sdri_db']:.3f} dB improvement.")
     report.extend(['', 'These small previews do not measure full-dataset performance.', '',
                    'Open `index.html` to listen. Keep this entire folder for relative audio links.',
-                   'Playback WAVs use shared attenuation to prevent clipping. Raw predictions are for analysis.',
+                   'Playback WAVs use shared gain with clip protection. Raw predictions are for analysis.',
                    'Training snapshots are in `training/`; per-example scores are in `summary.json`.', '',
                    'Run again from the project root using `config/preview.yaml`:', '',
                    '```fish', '/home/arjun/ai_env/bin/python -m scripts.preview_inference', '```', '',

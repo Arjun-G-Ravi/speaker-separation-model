@@ -1,0 +1,25 @@
+baseline: out/2026-11-17_22-15-33_654468/best.pt
+arm: C  # A: original pool; B: calibrated; C: calibrated + expanded pool
+resume: null
+source_pool:
+  archive: data/Libri2Mix-5000/.archives/train-clean-100.tar.gz
+  manifest: data/LibriSpeech-train-clean-100-8k/manifest.json
+  budget_bytes: 8000000000
+  reserve_bytes: 100000000
+calibration_examples: 32
+training:
+  device: cuda
+  epochs: 20
+  learning_rate: 0.0001
+  scheduler_patience: 20
+evaluation:
+  # Set each path after training its arm, then run the validation comparison.
+  checkpoints:
+    A: out/2026-11-20_09-31-02_462568/best.pt
+    B: out/2026-11-20_13-48-02_060676/best.pt
+    C: null
+  # Set to the validation report only after locking the candidate for test.
+  selection_report: null
+  min_si_sdr_gain_db: 0.3
+  max_worst_speaker_p10_drop_db: 0.2
+  min_projection_gain_db: 0.2

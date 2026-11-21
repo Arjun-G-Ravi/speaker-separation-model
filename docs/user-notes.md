@@ -41,4 +41,5 @@ Conv-TasNet, in three sentences: A learned convolutional encoder converts the wa
 
 A-FRCNN-16, in three sentences: A learned encoder converts the waveform into audio features at multiple temporal resolutions. A shared convolutional block repeatedly exchanges and combines information across those resolutions, refining the representation over 16 iterations. Speaker masks and a learned decoder then reconstruct the separated waveforms.
 
-
+# next run
+got to 13.03 or something. 

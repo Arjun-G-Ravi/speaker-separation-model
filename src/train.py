@@ -81,12 +81,13 @@ def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_s
                                "scale_loss": scale_total / count, "output_peak": peak}
 
 
-def run_training(config):
+def run_training(config, *, loader_factory=make_loader, initialize_model=None,
+                 extra_manifest_hashes=None):
     config = resolve_training_config(config)
     # Validate source counts and fixed crop lengths before creating run artifacts.
-    train_loader = make_loader(config, "train")
+    train_loader = loader_factory(config, "train")
     for split in ("validation", "test"):
-        make_loader(config, split)
+        loader_factory(config, split)
     options = config["training"]
     for key in ("batch_size", "accumulation_steps", "epochs", "log_every_steps",
                 "early_stopping_patience"):
@@ -109,6 +110,7 @@ def run_training(config):
     hashes = {split: digest(project_path(config["data"]["root"]) /
                             config["data"][f"{split}_manifest"])
               for split in ("train", "validation", "test")}
+    hashes.update(extra_manifest_hashes or {})
     start, step, best, stale = 0, 0, -math.inf, 0
     previous = None
     if config["checkpoint"]["resume"]:
@@ -131,6 +133,8 @@ def run_training(config):
             scaler.load_state_dict(previous["scaler"])
         start, step, best, stale = (previous[k] for k in ("next_epoch", "step", "best", "stale"))
         restore_rng(previous["rng"])
+    elif initialize_model is not None:
+        initialize_model(model)
     run_id, artifact, log = create_run()
     print(f"Run {run_id}: model={config['model']['name']}, sources={model.sources}, "
           f"device={device}, AMP={scaler.is_enabled()}", flush=True)
@@ -178,10 +182,10 @@ def run_training(config):
             print(f"Epoch {epoch + 1}/{options['epochs']}", flush=True)
             if device.type == "cuda":
                 torch.cuda.reset_peak_memory_stats(device)
-            loader = train_loader if epoch == 0 else make_loader(config, "train", epoch)
+            loader = train_loader if epoch == 0 else loader_factory(config, "train", epoch)
             loss, step, train_metrics = train_epoch(model, loader, optimizer,
                                      scaler, device, options, step, record)
-            validation = validate(model, make_loader(config, "validation"), device,
+            validation = validate(model, loader_factory(config, "validation"), device,
                                   options["log_every_steps"])
             score = validation["si_sdr"]
             if not math.isfinite(score):

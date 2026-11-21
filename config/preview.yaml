@@ -1,5 +1,6 @@
-checkpoint: out/2026-11-15_12-03-09_059720/best.pt
+checkpoint: out/2026-11-17_22-15-33_654468/best.pt
 device: cpu
 test_examples: 3
 train_examples: 2
 max_seconds: null
+playback_gain_db: 48
