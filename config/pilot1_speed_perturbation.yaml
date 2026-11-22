@@ -1,0 +1,11 @@
+control: out/2026-11-21_10-59-18_966297/best.pt
+resume: null
+speed_perturbation:
+  enabled: true
+  speeds: [95, 100, 105]
+evaluation:
+  checkpoint: null
+  device: cuda
+  min_si_sdr_gain_db: 0.3
+  max_worst_speaker_p10_drop_db: 0.2
+  midpoint_report: logs/pilot1_midpoint_supervision_2026-11-21_22-41-59_738456/validation.json

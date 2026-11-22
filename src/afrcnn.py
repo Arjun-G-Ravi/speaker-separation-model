@@ -41,6 +41,9 @@ class AsynchronousBlock(nn.Module):
         self.aggregate = conv_norm(hidden * stages, hidden, 1, activation=True)
         self.residual = nn.Conv1d(hidden, bottleneck, 1)
 
+    def modulate(self, features, coarser, index):
+        return features
+
     def forward(self, x):
         levels = []
         current = self.project(x)
@@ -58,12 +61,16 @@ class AsynchronousBlock(nn.Module):
                 neighbors.append(F.interpolate(levels[index + 1], size=level.shape[-1],
                                                mode="nearest"))
             features = self.fuse[index](torch.cat(neighbors, dim=1))
+            if index + 1 < len(levels):
+                features = self.modulate(features, levels[index + 1], index)
             fused.append(F.interpolate(features, size=levels[0].shape[-1], mode="nearest")
                          if index else features)
         return x + self.residual(self.aggregate(torch.cat(fused, dim=1)))
 
 
 class AFRCNN(nn.Module):
+    block_type = AsynchronousBlock
+
     def __init__(self, sources, encoder_channels, kernel_size, stride, bottleneck_channels,
                  hidden_channels, stages, iterations):
         super().__init__()
@@ -78,7 +85,7 @@ class AFRCNN(nn.Module):
                                  padding=kernel_size // 2, bias=False)
         self.input_norm = GlobalLayerNorm(encoder_channels)
         self.bottleneck = nn.Conv1d(encoder_channels, bottleneck_channels, 1)
-        self.block = AsynchronousBlock(bottleneck_channels, hidden_channels, stages)
+        self.block = self.block_type(bottleneck_channels, hidden_channels, stages)
         self.refine = nn.Sequential(
             nn.Conv1d(bottleneck_channels, bottleneck_channels, 1, groups=bottleneck_channels),
             nn.PReLU(),

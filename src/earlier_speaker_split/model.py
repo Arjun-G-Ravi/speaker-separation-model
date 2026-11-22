@@ -35,8 +35,18 @@ class EarlySplitAFRCNN(AFRCNN):
                                           output_padding=stride - 1, bias=False)
         nn.init.xavier_uniform_(self.decoder.weight)
 
-    def forward(self, mixture):
-        """[B, T] -> [B, sources, T]; CNN weights are shared across both phases."""
+    def refine_speakers(self, features, iteration):
+        return features
+
+    def _decode_sources(self, features, encoded, length):
+        batch, channels, frames = encoded.shape
+        masks = self.mask(features).reshape(batch, self.sources, channels, frames)
+        masked = (masks * encoded[:, None]).reshape(batch * self.sources, channels, frames)
+        estimates = self.decoder(masked).reshape(batch, self.sources, -1)
+        return estimates[..., :length]
+
+    def forward(self, mixture, *, tap_iteration=None):
+        """Separate waveforms, optionally returning a second estimate at a speaker step."""
         if mixture.ndim != 2 or mixture.shape[-1] == 0:
             raise ValueError("Expected a nonempty [batch, time] waveform")
         length = mixture.shape[-1]
@@ -54,14 +64,20 @@ class EarlySplitAFRCNN(AFRCNN):
             self.speaker_split(features).reshape(batch * self.sources, channels, frames)
         )
         features = initial
+        tapped = None
         for index in range(self.iterations - self.split_iteration):
             if index:
                 features = self.refine(initial + features)
             # Recompute speaker-block activations during backward to limit GPU memory.
             features = (checkpoint(self.block, features, use_reentrant=False)
                         if self.training and torch.is_grad_enabled() else self.block(features))
+            features = self.refine_speakers(features, index + 1)
+            if index + 1 == tap_iteration:
+                tapped = features
 
-        masks = self.mask(features).reshape(batch, self.sources, encoded.shape[1], frames)
-        masked = (masks * encoded[:, None]).reshape(batch * self.sources, -1, frames)
-        estimates = self.decoder(masked).reshape(batch, self.sources, -1)
-        return estimates[..., :length]
+        estimates = self._decode_sources(features, encoded, length)
+        if tap_iteration is None:
+            return estimates
+        if tapped is None:
+            raise ValueError("tap_iteration must index a speaker refinement step")
+        return estimates, self._decode_sources(tapped, encoded, length)

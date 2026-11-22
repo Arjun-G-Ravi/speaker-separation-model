@@ -33,11 +33,18 @@ def validate(model, loader, device, log_every_steps=None):
     return {"si_sdr": total / count, "scale_loss": scale_total / count, "output_peak": peak}
 
 
-def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_step=None):
+def separation_step(model, mixture, sources, lengths, options, amp):
+    with torch.autocast(device_type=mixture.device.type, dtype=torch.float16, enabled=amp):
+        estimate = model(mixture)
+    metrics = pit_objective(estimate, sources, lengths, options.get("scale_loss_weight", 0.0))
+    return estimate, metrics
+
+
+def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_step=None,
+                *, training_step=separation_step):
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    total, count = 0.0, 0
-    si_total, scale_total, peak = 0.0, 0.0, 0.0
+    totals, count, peak = {}, 0, 0.0
     accumulation = options["accumulation_steps"]
     amp = options["amp"] and device.type == "cuda"
     for index, (mixture, sources, lengths, _) in enumerate(loader):
@@ -47,13 +54,12 @@ def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_s
         # Weight the final smaller batch by examples, not by microbatch count.
         group_examples = min(group_size * loader.batch_size,
                              len(loader.dataset) - group_start * loader.batch_size)
-        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp):
-            estimate = model(mixture)
-        metrics = pit_objective(estimate, sources, lengths, options.get("scale_loss_weight", 0.0))
+        estimate, metrics = training_step(model, mixture, sources, lengths, options, amp)
         loss = metrics["loss"]
         if not torch.isfinite(loss):
             raise FloatingPointError("Non-finite training loss")
         scaler.scale(loss * len(mixture) / group_examples).backward()
+        batch_metrics = {key: value.item() for key, value in metrics.items()}
         if (index + 1) % accumulation == 0 or index + 1 == len(loader):
             scaler.unscale_(optimizer)
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), options["gradient_clip"])
@@ -66,23 +72,22 @@ def train_epoch(model, loader, optimizer, scaler, device, options, step=0, log_s
             step += 1
             if step % options["log_every_steps"] == 0:
                 print(f"Training: batch {index + 1}/{len(loader)}, step {step}, "
-                      f"loss {loss.item():.3f}", flush=True)
+                      f"loss {batch_metrics['loss']:.3f}", flush=True)
                 if log_step:
-                    log_step({"step": step, "train/batch_loss": loss.item(),
-                              "train/batch_si_sdr": metrics["si_sdr"].item(),
-                              "train/batch_scale_loss": metrics["scale_loss"].item(),
+                    log_step({"step": step,
+                              **{f"train/batch_{key}": value for key, value in batch_metrics.items()},
                               "train/gradient_norm": float(norm) if torch.isfinite(norm) else None})
-        total += loss.item() * len(mixture)
-        si_total += metrics["si_sdr"].item() * len(mixture)
-        scale_total += metrics["scale_loss"].item() * len(mixture)
+        for key, value in batch_metrics.items():
+            totals[key] = totals.get(key, 0.0) + value * len(mixture)
         peak = max(peak, estimate.detach().abs().max().item())
         count += len(mixture)
-    return total / count, step, {"si_sdr": si_total / count,
-                               "scale_loss": scale_total / count, "output_peak": peak}
+    epoch_loss = totals.pop("loss") / count
+    return epoch_loss, step, {**{key: value / count for key, value in totals.items()},
+                              "output_peak": peak}
 
 
 def run_training(config, *, loader_factory=make_loader, initialize_model=None,
-                 extra_manifest_hashes=None):
+                 extra_manifest_hashes=None, training_step=separation_step):
     config = resolve_training_config(config)
     # Validate source counts and fixed crop lengths before creating run artifacts.
     train_loader = loader_factory(config, "train")
@@ -184,7 +189,8 @@ def run_training(config, *, loader_factory=make_loader, initialize_model=None,
                 torch.cuda.reset_peak_memory_stats(device)
             loader = train_loader if epoch == 0 else loader_factory(config, "train", epoch)
             loss, step, train_metrics = train_epoch(model, loader, optimizer,
-                                     scaler, device, options, step, record)
+                                     scaler, device, options, step, record,
+                                     training_step=training_step)
             validation = validate(model, loader_factory(config, "validation"), device,
                                   options["log_every_steps"])
             score = validation["si_sdr"]

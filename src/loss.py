@@ -36,7 +36,7 @@ def pit_si_sdr(estimate, target, lengths=None):
     return best, torch.tensor(orders, device=target.device)[indices]
 
 
-def pit_objective(estimate, target, lengths=None, scale_weight=0.0):
+def pit_objective(estimate, target, lengths=None, scale_weight=0.0, *, return_assignment=False):
     """Joint PIT assignment for SI-SDR and scale-sensitive normalized waveform error."""
     if not 0 <= scale_weight < float("inf"):
         raise ValueError("scale_weight must be finite and nonnegative")
@@ -57,9 +57,12 @@ def pit_objective(estimate, target, lengths=None, scale_weight=0.0):
     ], -1)
     joint = -si_candidates + scale_weight * scale_candidates
     indices = joint.argmin(-1, keepdim=True)
-    return {"loss": joint.gather(1, indices).mean(),
-            "si_sdr": si_candidates.gather(1, indices).mean(),
-            "scale_loss": scale_candidates.gather(1, indices).mean()}
+    metrics = {"loss": joint.gather(1, indices).mean(),
+               "si_sdr": si_candidates.gather(1, indices).mean(),
+               "scale_loss": scale_candidates.gather(1, indices).mean()}
+    if return_assignment:
+        metrics["assignment"] = torch.tensor(orders, device=target.device)[indices.squeeze(1)]
+    return metrics
 
 
 def pit_loss(estimate, target, lengths=None, scale_weight=0.0):

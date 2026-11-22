@@ -78,6 +78,84 @@ gate, the test report covers only the original checkpoint.
 For listening previews of B or C, use `playback_gain_db: 0` in
 `config/preview.yaml`. Their decoder already incorporates the calibration.
 
+### Pilot 1 cross-speaker refinement
+
+This pilot starts from the epoch-138 checkpoint with B's recorded decoder gain.
+A shared convolution exchanges features after speaker refinement iterations 2,
+4, and 6. The training recipe comes from the archived B checkpoint.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_cross_speaker.train
+```
+
+The command checks initial prediction parity and gradients on a full training
+batch, then trains for up to 20 epochs. For recovery, set `resume` in
+`config/pilot1_cross_speaker.yaml` to the run's `recovery.pt`.
+
+Set `evaluation.checkpoint` in the same YAML to the printed `best.pt` path.
+Run the validation comparison with the following command.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_cross_speaker.evaluate
+```
+
+The validation report in `logs/pilot1_cross_speaker_<timestamp>/validation.json`
+contains raw and projected scores, paired gains, and recorded training time and
+GPU memory for both runs. The pilot advances at +0.30 dB raw SI-SDRi with at most
+a 0.20 dB drop in worst-speaker p10. Use the final locked checkpoint and projection
+policy for test evaluation.
+
+### Pilot 1 midpoint supervision
+
+This pilot uses the cross-speaker control's training recipe and starts from the
+same calibrated epoch-138 weights. It reuses the mask and decoder after speaker
+refinement step 4 of 8 and adds a training-only SI-SDR loss with weight 0.1. The
+final output's PIT assignment also determines the midpoint targets.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_midpoint_supervision.train
+```
+
+Settings are in `config/pilot1_midpoint_supervision.yaml`. Set `resume` there to
+recover an interrupted run. The selected model is saved to `out/<run_id>/best.pt`
+and uses the existing inference entry point. The matching metrics log records
+`train/midpoint_si_sdr` alongside the final-output scores.
+
+Set `evaluation.checkpoint` in the pilot YAML to the selected checkpoint. Compare
+it with the cross-speaker control on the full validation mixes with:
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_midpoint_supervision.evaluate
+```
+
+The report in `logs/pilot1_midpoint_supervision_<timestamp>/validation.json`
+contains paired raw and projected scores and weaker-speaker percentiles.
+
+### Pilot 1 coarse-to-fine gating
+
+Run from the repository root. The pilot rebuilds the cross-speaker control's
+seeded epoch-138 initialization and trains for 20 epochs with its archived
+recipe. Four identity-initialized channel-wise gates use adjacent coarse
+features to modulate the finer fused features. Before training, it checks
+initial waveform parity and runs a full training batch through backward.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_coarse_to_fine.train
+```
+
+Set `evaluation.checkpoint` in `config/pilot1_coarse_to_fine.yaml` to the
+printed best checkpoint. For interrupted training, set `resume` to the
+run's recovery checkpoint.
+
+```fish
+/home/arjun/ai_env/bin/python -m src.pilot1_coarse_to_fine.evaluate
+```
+
+The validation report gives paired gains versus cross-speaker exchange and
+compares projected SI-SDRi with midpoint supervision. A second seed is
+warranted at a raw gain of at least 0.30 dB, a weaker-speaker p10 drop of at
+most 0.20 dB, and a projected score above the archived midpoint result.
+
 ## Local listening room
 
 Run the dataset browser and upload inference UI in your uv environment:

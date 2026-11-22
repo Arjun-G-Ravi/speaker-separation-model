@@ -1,0 +1,6 @@
+resume: out/2026-11-22_19-11-56_022495/best.pt
+total_epochs: 50
+evaluation:
+  checkpoint: out/2026-11-22_19-11-56_022495/best.pt
+  reference_report: logs/pilot1_midpoint_supervision_2026-11-21_22-41-59_738456/validation.json
+  device: cuda

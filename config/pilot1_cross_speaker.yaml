@@ -1,0 +1,13 @@
+baseline: out/2026-11-17_22-15-33_654468/best.pt
+control: out/2026-11-20_13-48-02_060676/best.pt
+resume: null
+model:
+  exchange_channels: 64
+  exchange_iterations: [2, 4, 6]
+training:
+  device: cuda
+  epochs: 20
+evaluation:
+  checkpoint: out/2026-11-21_10-59-18_966297/best.pt
+  min_si_sdr_gain_db: 0.3
+  max_worst_speaker_p10_drop_db: 0.2
